@@ -6,7 +6,6 @@ app/build/
 
 # Gradle
 .gradle/
-gradle/wrapper/gradle-wrapper.jar
 local.properties
 
 # IDE
