@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        Base XML theme for the activity window — used before Compose takes over rendering.
+        For a Compose-only app (no Views), the XML theme only needs to set window attributes.
+        We use the platform's NoActionBar style to suppress the action bar and prevent
+        a flash before Compose draws. The actual Material 3 theme is applied in Compose
+        via HermesPromptTheme { ... }.
+
+        Note: Theme.Material3 styles come from com.google.android.material, which is a
+        View-based library not included in this Compose-only app. We use the platform
+        style directly and let Compose handle all visual styling.
+    -->
+    <style name="Theme.HermesPrompt" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/white</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+
+    <!--
+        Overlay theme for the prompt sheet activity path.
+        windowIsTranslucent lets the activity show content beneath it;
+        the Compose scrim Box provides the actual dimming.
+        Applied via setTheme() in MainActivity.onCreate() before super.onCreate().
+    -->
+    <style name="Theme.HermesPrompt.Overlay" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>

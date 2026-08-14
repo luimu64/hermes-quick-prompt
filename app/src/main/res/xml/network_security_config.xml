@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Allow cleartext (HTTP) traffic only for user-configured hosts.
+    By default only HTTPS is allowed. When the user enters an http:// URL,
+    the OkHttp client is configured to allow cleartext for that specific host.
+    This config allows cleartext globally because we cannot know the host at
+    compile time; the app relies on the user configuring a legitimate host.
+    Security note: this is intentional for self-hosted LAN use cases.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

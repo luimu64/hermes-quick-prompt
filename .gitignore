@@ -1,0 +1,24 @@
+# Build artifacts
+/build/
+app/build/
+*.apk
+*.aab
+
+# Gradle
+.gradle/
+gradle/wrapper/gradle-wrapper.jar
+local.properties
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Android generated
+/captures/
+*.jks
+*.keystore
+
+# macOS
+.DS_Store
