@@ -126,6 +126,23 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
 
+            OutlinedTextField(
+                value = uiState.profile,
+                onValueChange = viewModel::onProfileChange,
+                label = { Text("Profile (optional)") },
+                placeholder = { Text("coder") },
+                supportingText = {
+                    if (uiState.profileError != null) {
+                        Text(uiState.profileError!!, color = MaterialTheme.colorScheme.error)
+                    } else {
+                        Text("Leave blank for the default profile. Lowercase letters, digits, - or _.")
+                    }
+                },
+                isError = uiState.profileError != null,
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+
             // ── Action buttons ─────────────────────────────────────────
             Row(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),

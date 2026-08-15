@@ -77,6 +77,7 @@ class PromptViewModel(
                     apiKey = settings.apiKey,
                     prompt = prompt,
                     model = settings.model.takeIf { it.isNotBlank() },
+                    profile = settings.profile,
                 )
             } catch (e: HermesApiException) {
                 _uiState.update { it.copy(runState = RunState.Error("Error ${e.code}: ${e.message}")) }
@@ -95,6 +96,7 @@ class PromptViewModel(
                     baseUrl = settings.serverUrl,
                     apiKey = settings.apiKey,
                     runId = runId,
+                    profile = settings.profile,
                 ).collect { event ->
                     when (event) {
                         is HermesApi.HermesEvent.MessageDelta -> {
@@ -158,6 +160,7 @@ class PromptViewModel(
                     baseUrl = _uiState.value.settings.serverUrl,
                     apiKey = _uiState.value.settings.apiKey,
                     runId = running.runId,
+                    profile = _uiState.value.settings.profile,
                 )
             }
         }

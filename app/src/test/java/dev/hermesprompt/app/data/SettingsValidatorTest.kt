@@ -93,4 +93,37 @@ class SettingsValidatorTest {
     fun `isValid returns false for empty string`() {
         assertFalse(SettingsValidator.isValid(""))
     }
+
+    // ── Profile name ────────────────────────────────────────────────────────
+
+    @Test
+    fun `blank profile normalizes to empty string`() {
+        assertEquals("", SettingsValidator.normalizeProfile(""))
+        assertEquals("", SettingsValidator.normalizeProfile("   "))
+    }
+
+    @Test
+    fun `valid profile name is returned trimmed`() {
+        assertEquals("coder", SettingsValidator.normalizeProfile("coder"))
+        assertEquals("web-browser", SettingsValidator.normalizeProfile("  web-browser  "))
+        assertEquals("a_1", SettingsValidator.normalizeProfile("a_1"))
+    }
+
+    @Test
+    fun `uppercase profile name is rejected`() {
+        assertNull(SettingsValidator.normalizeProfile("Coder"))
+    }
+
+    @Test
+    fun `profile name with illegal characters is rejected`() {
+        assertNull(SettingsValidator.normalizeProfile("coder/bot"))
+        assertNull(SettingsValidator.normalizeProfile("co der"))
+        assertNull(SettingsValidator.normalizeProfile(".hidden"))
+        assertNull(SettingsValidator.normalizeProfile("-leading-dash"))
+    }
+
+    @Test
+    fun `profile name over 64 chars is rejected`() {
+        assertNull(SettingsValidator.normalizeProfile("a".repeat(65)))
+    }
 }

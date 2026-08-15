@@ -68,12 +68,24 @@ class HermesApi(private val client: OkHttpClient) {
     // ── Public API ────────────────────────────────────────────────────────────
 
     /**
+     * Builds the full URL for an API path, inserting the multiplex profile
+     * prefix when one is set. The Hermes API server routes profile-scoped
+     * requests via a `/p/<profile>/` URL prefix (gateway.multiplex_profiles);
+     * an empty profile keeps the plain path (default profile).
+     */
+    private fun apiUrl(baseUrl: String, profile: String, path: String): String {
+        val prefix = profile.trim().takeIf { it.isNotEmpty() }?.let { "/p/$it" } ?: ""
+        return "$baseUrl$prefix$path"
+    }
+
+    /**
      * Starts a new Hermes run.
      *
      * @param baseUrl Normalized server URL (no trailing slash).
      * @param apiKey Bearer token.
      * @param prompt The user's text prompt.
      * @param model Optional model override; omitted from the request when blank.
+     * @param profile Optional profile name; blank routes to the default profile.
      * @return [StartRunResponse] on HTTP 202.
      * @throws IOException on network error.
      * @throws HermesApiException on non-2xx response.
@@ -83,6 +95,7 @@ class HermesApi(private val client: OkHttpClient) {
         apiKey: String,
         prompt: String,
         model: String?,
+        profile: String = "",
     ): StartRunResponse = kotlinx.coroutines.withContext(Dispatchers.IO) {
         val body = StartRunRequest(
             input = prompt,
@@ -92,7 +105,7 @@ class HermesApi(private val client: OkHttpClient) {
         val bodyJson = json.encodeToString(StartRunRequest.serializer(), body)
 
         val request = Request.Builder()
-            .url("$baseUrl/v1/runs")
+            .url(apiUrl(baseUrl, profile, "/v1/runs"))
             .addHeader("Authorization", "Bearer $apiKey")
             .post(bodyJson.toRequestBody(JSON_MEDIA_TYPE))
             .build()
@@ -121,8 +134,9 @@ class HermesApi(private val client: OkHttpClient) {
         baseUrl: String,
         apiKey: String,
         runId: String,
+        profile: String = "",
     ): Flow<HermesEvent> = flow {
-        val url = "$baseUrl/v1/runs/$runId/events"
+        val url = apiUrl(baseUrl, profile, "/v1/runs/$runId/events")
         var attempt = 0
         val maxRetries = 2
 
@@ -209,11 +223,11 @@ class HermesApi(private val client: OkHttpClient) {
     /**
      * Fires a stop request for [runId]. Fire-and-forget; errors are swallowed.
      */
-    suspend fun stopRun(baseUrl: String, apiKey: String, runId: String) {
+    suspend fun stopRun(baseUrl: String, apiKey: String, runId: String, profile: String = "") {
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
                 val request = Request.Builder()
-                    .url("$baseUrl/v1/runs/$runId/stop")
+                    .url(apiUrl(baseUrl, profile, "/v1/runs/$runId/stop"))
                     .addHeader("Authorization", "Bearer $apiKey")
                     .post("".toRequestBody(JSON_MEDIA_TYPE))
                     .build()
@@ -227,12 +241,14 @@ class HermesApi(private val client: OkHttpClient) {
     /**
      * Health check — no auth required.
      *
+     * @param profile Optional profile name; when set the check targets the
+     *   profile-scoped path so an unknown profile surfaces as a failure.
      * @return true on HTTP 2xx with `{"status":"ok"}` (or any 2xx).
      */
-    suspend fun health(baseUrl: String): Boolean = kotlinx.coroutines.withContext(Dispatchers.IO) {
+    suspend fun health(baseUrl: String, profile: String = ""): Boolean = kotlinx.coroutines.withContext(Dispatchers.IO) {
         try {
             val request = Request.Builder()
-                .url("$baseUrl/v1/health")
+                .url(apiUrl(baseUrl, profile, "/v1/health"))
                 .get()
                 .build()
             client.newCall(request).execute().use { it.isSuccessful }

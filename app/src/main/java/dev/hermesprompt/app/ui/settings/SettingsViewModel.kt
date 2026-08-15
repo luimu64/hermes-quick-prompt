@@ -18,6 +18,8 @@ data class SettingsUiState(
     val serverUrl: String = "",
     val apiKey: String = "",
     val model: String = "",
+    val profile: String = "",
+    val profileError: String? = null,
     val serverUrlError: String? = null,
     val isSaving: Boolean = false,
     val isTesting: Boolean = false,
@@ -52,6 +54,7 @@ class SettingsViewModel(
                     serverUrl = settings.serverUrl,
                     apiKey = settings.apiKey,
                     model = settings.model,
+                    profile = settings.profile,
                 ) }
             }
         }
@@ -69,6 +72,10 @@ class SettingsViewModel(
         _uiState.update { it.copy(model = model) }
     }
 
+    fun onProfileChange(profile: String) {
+        _uiState.update { it.copy(profile = profile, profileError = null, testResult = null) }
+    }
+
     /** Validates, normalizes, and persists the current settings. */
     fun save() {
         val state = _uiState.value
@@ -79,6 +86,14 @@ class SettingsViewModel(
         }
         val normalizedUrl = (urlResult as SettingsValidator.UrlResult.Valid).url
 
+        val normalizedProfile = SettingsValidator.normalizeProfile(state.profile)
+        if (normalizedProfile == null) {
+            _uiState.update {
+                it.copy(profileError = "Profile names: lowercase letters, digits, - or _. Max 64 chars.")
+            }
+            return
+        }
+
         viewModelScope.launch {
             _uiState.update { it.copy(isSaving = true, serverUrlError = null) }
             settingsStore.save(
@@ -86,9 +101,10 @@ class SettingsViewModel(
                     serverUrl = normalizedUrl,
                     apiKey = state.apiKey.trim(),
                     model = state.model.trim(),
+                    profile = normalizedProfile,
                 )
             )
-            _uiState.update { it.copy(isSaving = false, serverUrl = normalizedUrl) }
+            _uiState.update { it.copy(isSaving = false, serverUrl = normalizedUrl, profile = normalizedProfile) }
         }
     }
 
@@ -102,10 +118,11 @@ class SettingsViewModel(
             return
         }
         val url = (urlResult as SettingsValidator.UrlResult.Valid).url
+        val profile = SettingsValidator.normalizeProfile(_uiState.value.profile) ?: ""
 
         testJob = viewModelScope.launch {
             _uiState.update { it.copy(isTesting = true, testResult = null) }
-            val ok = hermesApi.health(url)
+            val ok = hermesApi.health(url, profile)
             _uiState.update {
                 it.copy(
                     isTesting = false,

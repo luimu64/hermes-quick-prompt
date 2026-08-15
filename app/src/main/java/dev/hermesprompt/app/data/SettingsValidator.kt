@@ -70,4 +70,23 @@ object SettingsValidator {
      * Returns true if [url] is a valid, normalized URL (passes [normalize]).
      */
     fun isValid(url: String): Boolean = normalize(url) is UrlResult.Valid
+
+    // ── Profile name ────────────────────────────────────────────────────────
+
+    private val PROFILE_NAME_REGEX = Regex("^[a-z0-9][a-z0-9_-]{0,63}$")
+
+    /**
+     * Normalizes and validates a Hermes profile name.
+     *
+     * Mirrors the server-side rule (hermes_cli/profiles.py `_PROFILE_ID_RE`):
+     * lowercase alphanumeric start, then lowercase alphanumeric / `-` / `_`,
+     * max 64 chars. Empty/blank input is valid and means "default profile".
+     *
+     * @return the trimmed name, or null when invalid (or blank → "").
+     */
+    fun normalizeProfile(raw: String): String? {
+        val name = raw.trim()
+        if (name.isEmpty()) return ""
+        return if (PROFILE_NAME_REGEX.matches(name)) name else null
+    }
 }
