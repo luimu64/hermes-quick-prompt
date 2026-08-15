@@ -11,6 +11,23 @@ the power button (or hold Home on gesture navigation) and a prompt sheet pops
 up immediately. Type your question, hit Send, and the answer streams back from
 your Hermes instance — without opening a browser or switching apps.
 
+## Download
+
+Prebuilt APKs are built automatically by GitHub Actions on every push to `main`:
+
+| Build | URL |
+|---|---|
+| **Release APK (recommended)** | `https://github.com/luimu64/hermes-quick-prompt/releases/download/latest/hermes-quick-prompt-release.apk` |
+| Debug APK | `https://github.com/luimu64/hermes-quick-prompt/releases/download/latest/hermes-quick-prompt-debug.apk` |
+
+- Open the URL on your phone, download, and install (allow "install unknown apps"
+  for your browser if prompted).
+- The release APK is signed with a stable key, so it **installs over previous
+  builds** — no uninstall needed.
+- Tag a release (`git tag v1.0.0 && git push origin v1.0.0`) to get a permanent,
+  versioned release with the APKs attached.
+- Raw CI artifacts (Actions → run → Artifacts) are for debugging; use the links above.
+
 ## Build
 
 ### Requirements

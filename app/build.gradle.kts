@@ -19,6 +19,20 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        // CI signs with a stable key from env/secrets so builds install over
+        // each other. Local builds fall back to the debug key.
+        create("release") {
+            val env = System.getenv()
+            if (env["ANDROID_KEYSTORE_FILE"] != null) {
+                storeFile = file(env["ANDROID_KEYSTORE_FILE"]!!)
+                storePassword = env["ANDROID_KEYSTORE_PASSWORD"] ?: ""
+                keyAlias = env["ANDROID_KEY_ALIAS"] ?: ""
+                keyPassword = env["ANDROID_KEY_PASSWORD"] ?: ""
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
@@ -29,6 +43,8 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            val releaseSigning = signingConfigs.getByName("release")
+            signingConfig = if (releaseSigning.storeFile != null) releaseSigning else signingConfigs.getByName("debug")
         }
     }
 
