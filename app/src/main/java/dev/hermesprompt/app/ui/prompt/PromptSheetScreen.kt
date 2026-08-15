@@ -1,5 +1,6 @@
 package dev.hermesprompt.app.ui.prompt
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -61,6 +62,10 @@ fun PromptSheetScreen(
         viewModel.cancelRun()
         onDismiss()
     }
+
+    // Back button must behave exactly like tapping the scrim: cancel the
+    // in-flight run (fire-and-forget stop on the server) and close.
+    BackHandler(enabled = true, onBack = handleDismiss)
 
     Box(
         modifier = modifier.fillMaxSize(),
