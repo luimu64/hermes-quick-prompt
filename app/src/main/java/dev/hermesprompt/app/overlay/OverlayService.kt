@@ -44,10 +44,11 @@ import dev.hermesprompt.app.ui.MainActivity
  *
  * Window behaviour:
  *  - Full-screen, transparent window so the app below stays visible.
- *  - Starts `FLAG_NOT_FOCUSABLE | FLAG_NOT_TOUCH_MODAL` so the app below keeps
- *    input focus and stays resumed. Any touch on the overlay flips the window
- *    focusable so the soft keyboard can attach when the user taps the input
- *    field; `setInputFocusable` is also exposed for explicit control.
+ *  - Starts FOCUSABLE so the summoned input can take focus and pop the IME
+ *    immediately (the sheet's auto-focus contract; the app below is never
+ *    paused by an overlay — no task, no activity). A touch still re-asserts
+ *    focusability via [setInputFocusable] as a safety net, and the flag is
+ *    restored to NOT_FOCUSABLE on dismiss.
  *  - The overlay UI decides what a touch means (tap-off scrim → dismiss); the
  *    service only hosts the window.
  *
@@ -366,9 +367,9 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner, ViewM
 
         val wm = windowManager ?: return
         val root = FrameLayout(this).apply {
-            // Any touch on the overlay means the user is interacting with it:
-            // make the window focusable so tapping the input field opens the
-            // IME. The UI's own scrim/close handlers decide whether to dismiss.
+            // Safety net: if the window is ever NOT_FOCUSABLE, any touch makes
+            // it focusable so typing works. The window already starts
+            // focusable; this also re-asserts it after an external flip.
             setOnTouchListener { _, _ ->
                 setInputFocusable(true)
                 false // don't consume — let children/UI handle the touch
@@ -379,8 +380,13 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner, ViewM
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            // The window starts FOCUSABLE so the summon can immediately hand
+            // input to the prompt field and pop the IME (the sheet's auto-focus
+            // contract). A bare overlay window never creates a task and never
+            // pauses the activity underneath — the "app below keeps running"
+            // guarantee comes from being an overlay, not from NOT_FOCUSABLE.
+            // NOT_FOCUSABLE is re-applied on dismiss for hygiene.
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT,
         )
 
