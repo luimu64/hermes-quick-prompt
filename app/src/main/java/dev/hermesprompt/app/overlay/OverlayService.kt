@@ -15,6 +15,17 @@ import android.provider.Settings
 import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
+import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.lifecycle.setViewTreeViewModelStoreOwner
+import androidx.savedstate.SavedStateRegistry
+import androidx.savedstate.SavedStateRegistryController
+import androidx.savedstate.SavedStateRegistryOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import dev.hermesprompt.app.AppContainer
 import dev.hermesprompt.app.HermesPromptApp
 import dev.hermesprompt.app.R
@@ -53,7 +64,7 @@ import dev.hermesprompt.app.ui.MainActivity
  * [appContainer] (see HermesPromptApp/AppContainer) for whoever needs the
  * API client / settings store to build the overlay UI's ViewModel.
  */
-class OverlayService : Service() {
+class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner, ViewModelStoreOwner {
 
     companion object {
         private const val CHANNEL_ID = "overlay"
@@ -138,6 +149,51 @@ class OverlayService : Service() {
     private var pendingInitialText: String? = null
     private var pendingAnswer: String? = null
 
+    /**
+     * Lifecycle for the Compose UI hosted in the overlay window. The overlay is
+     * a bare WindowManager window owned by this service — not an activity — so
+     * Compose's recomposer cannot find a [LifecycleOwner] in the view tree by
+     * itself; we provide one and drive it with the window's visibility.
+     *
+     * The registry starts at [Lifecycle.State.INITIALIZED] (not CREATED) on
+     * purpose: [SavedStateRegistryController.performRestore] requires the
+     * owner's lifecycle to be exactly INITIALIZED — the same "initialization
+     * stage" an Activity is in when its controller is wired up. The controller
+     * is restored in [onCreate], and the window path moves the registry up to
+     * RESUMED when the overlay is on screen.
+     *
+     * The registry is deliberately mutable: `dismissOverlay()` moves it to
+     * [Lifecycle.State.DESTROYED], but the service instance can outlive the
+     * window (it stays bound until the wiring layer unbinds), and a re-summon
+     * may reuse the same instance — the registry is re-armed to CREATED before
+     * the window comes back up.
+     */
+    private var lifecycleRegistry: LifecycleRegistry =
+        LifecycleRegistry(this).apply { currentState = Lifecycle.State.INITIALIZED }
+
+    override val lifecycle: Lifecycle get() = lifecycleRegistry
+
+    /**
+     * Compose (and any future `viewModel()`-using content) also needs a
+     * [SavedStateRegistryOwner] and a [ViewModelStoreOwner] on the view tree —
+     * the same service provides both. The store doubles as the natural home of
+     * the run ViewModel for the session (see OverlayPromptHost): it is cleared
+     * when the window goes away, so the run scope dies with the overlay.
+     *
+     * The controller is wired in [onCreate] while the lifecycle is INITIALIZED
+     * (the same "initialization stage" guard an Activity satisfies), which
+     * marks the registry restored so Compose's saveable machinery can consume
+     * restored state. There is never any actual saved state — the overlay does
+     * not survive process death — so this is purely the required init dance.
+     */
+    private val savedStateRegistryController: SavedStateRegistryController =
+        SavedStateRegistryController.create(this)
+
+    override val savedStateRegistry: SavedStateRegistry
+        get() = savedStateRegistryController.savedStateRegistry
+
+    override val viewModelStore: ViewModelStore = ViewModelStore()
+
     inner class LocalBinder : Binder() {
         fun getService(): OverlayService = this@OverlayService
     }
@@ -148,6 +204,14 @@ class OverlayService : Service() {
         super.onCreate()
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         createNotificationChannel()
+        // Wire the SavedStateRegistryController while the lifecycle is still
+        // INITIALIZED — the same "initialization stage" an Activity's controller
+        // is attached in. This sets isRestored=true on the registry (Compose's
+        // saveable machinery calls consumeRestoredStateForKey and requires it),
+        // registering the Recreator observer against this service's lifecycle.
+        // There is no saved state to restore (the overlay never survives
+        // process death), so the call is just the required init dance.
+        savedStateRegistryController.performRestore(null)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -176,6 +240,10 @@ class OverlayService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        if (lifecycleRegistry.currentState != Lifecycle.State.DESTROYED) {
+            lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
+        }
+        viewModelStore.clear()
         overlayRoot?.let { root -> runCatching { windowManager?.removeView(root) } }
         overlayRoot = null
         overlayParams = null
@@ -188,6 +256,14 @@ class OverlayService : Service() {
      */
     fun setOverlayContent(view: View, content: OverlayContent) {
         val root = ensureWindow() ?: return
+        // The overlay window is not an activity window, so Compose cannot find
+        // a lifecycle/saved-state/view-model owner on its own — provide this
+        // service as all three for the attached UI tree (required before the
+        // view is attached, because composition starts during
+        // dispatchAttachedToWindow).
+        root.setViewTreeLifecycleOwner(this)
+        root.setViewTreeSavedStateRegistryOwner(this)
+        root.setViewTreeViewModelStoreOwner(this)
         root.removeAllViews()
         root.addView(
             view,
@@ -226,6 +302,12 @@ class OverlayService : Service() {
 
     /** Removes the overlay window, stops the foreground state, and stops the service. */
     fun dismissOverlay() {
+        // Tear down the Compose UI lifecycle before removing the window. If the
+        // instance is reused for a later summon, addOverlayWindow re-arms it.
+        lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
+        // Kill the session-scoped run ViewModel (cancels its scope) with the
+        // overlay; the next summon builds a fresh one.
+        viewModelStore.clear()
         // Re-add NOT_FOCUSABLE before removal so a re-shown window starts
         // non-focusable (per the root-cause report's flag guidance).
         setInputFocusable(false)
@@ -274,6 +356,14 @@ class OverlayService : Service() {
             return
         }
 
+        // A previous session may have torn the lifecycle down to DESTROYED on
+        // this (still-bound) instance; re-arm before the window comes back up.
+        if (lifecycleRegistry.currentState == Lifecycle.State.DESTROYED) {
+            lifecycleRegistry = LifecycleRegistry(this).apply {
+                currentState = Lifecycle.State.CREATED
+            }
+        }
+
         val wm = windowManager ?: return
         val root = FrameLayout(this).apply {
             // Any touch on the overlay means the user is interacting with it:
@@ -297,6 +387,9 @@ class OverlayService : Service() {
         wm.addView(root, params)
         overlayRoot = root
         overlayParams = params
+        // The window is now on screen: give the attached Compose UI an active
+        // lifecycle so its LaunchedEffects/state collection run.
+        lifecycleRegistry.currentState = Lifecycle.State.RESUMED
     }
 
     private fun startForegroundIfNeeded() {

@@ -18,10 +18,12 @@
     </style>
 
     <!--
-        Overlay theme for the prompt sheet activity path.
-        windowIsTranslucent lets the activity show content beneath it;
-        the Compose scrim Box provides the actual dimming.
-        Applied via setTheme() in MainActivity.onCreate() before super.onCreate().
+        Overlay theme for the summon path. The ASSIST activity window is
+        transparent because it only exists for the few frames it takes to hand
+        off to the OverlayService (which draws the real overlay UI); a
+        transparent background avoids flashing the opaque base windowBackground
+        over the app below. Applied via setTheme() in MainActivity.onCreate()
+        before super.onCreate().
     -->
     <style name="Theme.HermesPrompt.Overlay" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowIsTranslucent">true</item>

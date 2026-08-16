@@ -8,8 +8,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import dev.hermesprompt.app.HermesPromptApp
 import dev.hermesprompt.app.R
-import dev.hermesprompt.app.ui.prompt.PromptSheetScreen
-import dev.hermesprompt.app.ui.prompt.PromptViewModel
+import dev.hermesprompt.app.overlay.OverlayService
+import dev.hermesprompt.app.ui.overlay.OverlayPromptHost
 import dev.hermesprompt.app.ui.settings.SettingsScreen
 import dev.hermesprompt.app.ui.settings.SettingsViewModel
 import dev.hermesprompt.app.ui.theme.HermesPromptTheme
@@ -17,13 +17,19 @@ import dev.hermesprompt.app.ui.theme.HermesPromptTheme
 /**
  * Single-activity host.
  *
- * Intent dispatch logic (called in [onCreate]):
- *   1. If the intent action is ASSIST or VOICE_COMMAND, or EXTRA_ASSIST_CONTEXT is present →
- *      apply the translucent overlay theme and show the [PromptSheetScreen].
+ * Intent dispatch:
+ *   1. ASSIST / VOICE_COMMAND / EXTRA_ASSIST_CONTEXT (the summon) → hand off to
+ *      the overlay service. The prompt UI is drawn as a WindowManager
+ *      application overlay (see [OverlayPromptHost]), never as an activity
+ *      window, and this activity finishes immediately — no new task, no
+ *      backgrounding of the app underneath.
  *   2. Otherwise (normal launcher launch) → apply the opaque base theme and show [SettingsScreen].
  *
  * Theme must be swapped via [setTheme] **before** [super.onCreate] so that the
- * window's translucency attribute takes effect before the window is first rendered.
+ * window's attributes take effect before the window is first rendered. The
+ * summon path keeps the translucent theme: the window only exists for the few
+ * frames needed to start the overlay service, and a transparent background
+ * avoids flashing over the app below.
  */
 class MainActivity : ComponentActivity() {
 
@@ -34,14 +40,8 @@ class MainActivity : ComponentActivity() {
 
     private val container get() = (application as HermesPromptApp).container
 
-    // ViewModels are scoped to this Activity; if the user taps the gear icon
-    // from the prompt sheet, we just finish() and re-launch Settings from the
-    // normal launcher (singleTask means there's always one instance).
     private val settingsViewModel: SettingsViewModel by viewModels {
         SettingsViewModel.Factory(container.settingsStore, container.hermesApi)
-    }
-    private val promptViewModel: PromptViewModel by viewModels {
-        PromptViewModel.Factory(container.settingsStore, container.hermesApi)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -56,15 +56,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
 
         if (isAssistLaunch) {
-            setContent {
-                HermesPromptTheme {
-                    PromptSheetScreen(
-                        viewModel = promptViewModel,
-                        onDismiss = { finish() },
-                        onOpenSettings = { openSettings() },
-                    )
-                }
-            }
+            launchOverlay()
         } else {
             setContent {
                 HermesPromptTheme {
@@ -77,19 +69,29 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        // singleTask: if the user long-presses power while the app is already
-        // open in Settings mode, re-create to show the prompt sheet.
-        recreate()
+        // singleTask: a summon while the app is already open (Settings screen)
+        // must route to the overlay instead of re-showing the sheet activity.
+        // A MAIN/LAUNCHER intent needs nothing — singleTask already brought the
+        // Settings screen forward.
+        if (isAssistLaunch) {
+            launchOverlay()
+        }
     }
 
-    private fun openSettings() {
-        // Launch a fresh Settings instance via the normal MAIN/LAUNCHER intent.
-        val intent = Intent(this, MainActivity::class.java).apply {
-            action = Intent.ACTION_MAIN
-            addCategory(Intent.CATEGORY_LAUNCHER)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+    /**
+     * The summon path. Never renders prompt UI in this activity: gates the
+     * SYSTEM_ALERT_WINDOW special access, hands off to [OverlayPromptHost]
+     * (which starts and binds the overlay service and attaches the overlay UI),
+     * then finishes immediately so no sheet window or task entry remains and
+     * the app underneath is never paused by a new task.
+     */
+    private fun launchOverlay() {
+        if (!OverlayService.canDrawOverlays(this)) {
+            OverlayService.openOverlayPermissionSettings(this)
+            finish()
+            return
         }
-        startActivity(intent)
+        OverlayPromptHost.summon(this)
         finish()
     }
 }
