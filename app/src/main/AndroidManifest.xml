@@ -3,6 +3,12 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Summon overlay: draw over other apps (special access, see OverlayService) -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Foreground service hosting the overlay (type specialUse, targetSdk 35) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
     <application
         android:name=".HermesPromptApp"
         android:allowBackup="true"
@@ -31,6 +37,21 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
+
+        <!--
+            Foreground service that hosts the summon overlay via
+            WindowManager.addView(TYPE_APPLICATION_OVERLAY). Not exported —
+            only started/bound by this app. specialUse is the catch-all FGS
+            type; the property below is the Play-console use-case declaration.
+        -->
+        <service
+            android:name=".overlay.OverlayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="assistant overlay" />
+        </service>
 
     </application>
 
