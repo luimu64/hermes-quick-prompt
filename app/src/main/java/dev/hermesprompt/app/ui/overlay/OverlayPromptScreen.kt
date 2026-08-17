@@ -1,13 +1,25 @@
-package dev.hermesprompt.app.ui.prompt
+package dev.hermesprompt.app.ui.overlay
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -17,75 +29,116 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Send
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import dev.hermesprompt.app.data.RunState
 import dev.hermesprompt.app.ui.theme.ScrimColor
 
 /**
- * The full-screen translucent prompt sheet.
+ * State driving the overlay UI.
+ *
+ * Held by the overlay service (or by a test harness) and pushed into
+ * [OverlayPromptScreen] on each change. The composable itself is stateless:
+ * it renders [promptText]/[answerText] and forwards user intent through the
+ * callbacks, which is what makes it unit-testable.
+ */
+data class OverlayUiState(
+    val promptText: String = "",
+    val answerText: String = "",
+    val isRunning: Boolean = false,
+    val isConfigured: Boolean = true,
+)
+
+/**
+ * The overlay UI attached to the overlay service.
  *
  * Layout:
- *   - A [Box] fills the entire screen:
- *       - A semi-transparent scrim covers the top area; tapping it calls [onDismiss].
- *       - A rounded-top Surface is anchored to the bottom, containing the sheet contents.
+ *   - A [Box] fills the overlay root window.
+ *       - A semi-transparent scrim covers the root; tapping it (outside the
+ *         card) calls [onDismiss] — the tap-outside dismissal.
+ *       - A rounded-top Surface is anchored to the bottom, containing the
+ *         prompt input, submit action, answer area and close affordance.
  *
- * The activity is already configured as translucent (Theme.HermesPrompt.Overlay),
- * so the system UI beneath shows through the scrim.
+ * Callbacks (the unit-testable surface):
+ *   - [onQuestionSubmitted] — fired with the trimmed question when the user
+ *     submits (IME Send or the Send button), never while a run is in flight.
+ *   - [onAnswerRendered] — fired with the text every time the answer area
+ *     renders non-blank text (initial render + each streaming update).
+ *   - [onDismiss] — fired on tap-outside, the close affordance, or any other
+ *     dismissal; the hosting service is responsible for removing the window
+ *     and restoring input focus to the app below.
+ *
+ * Auto-focus: the input requests focus and shows the IME when summoned. The
+ * hosting window must be focusable for the IME to attach — the overlay service
+ * owns the FLAG_NOT_FOCUSABLE flag and must clear it while the user types.
  */
 @Composable
-fun PromptSheetScreen(
-    viewModel: PromptViewModel,
+fun OverlayPromptScreen(
+    state: OverlayUiState,
+    onPromptChange: (String) -> Unit,
+    onQuestionSubmitted: (String) -> Unit,
+    onAnswerRendered: (String) -> Unit,
     onDismiss: () -> Unit,
-    onOpenSettings: () -> Unit,
+    onOpenSettings: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val focusRequester = remember { FocusRequester() }
-    val isConfigured = uiState.settings.isConfigured
-    val runState = uiState.runState
-    val isRunning = runState is RunState.Running
+    val keyboardController = LocalSoftwareKeyboardController.current
 
-    // Dismiss handler — cancels any in-flight run first
-    val handleDismiss: () -> Unit = {
-        viewModel.cancelRun()
-        onDismiss()
+    // Auto-focus the input and pop the IME when the overlay appears.
+    LaunchedEffect(state.isConfigured) {
+        if (state.isConfigured) {
+            focusRequester.requestFocus()
+            keyboardController?.show()
+        }
     }
 
-    // Back button must behave exactly like tapping the scrim: cancel the
-    // in-flight run (fire-and-forget stop on the server) and close.
-    BackHandler(enabled = true, onBack = handleDismiss)
+    // Notify whenever the answer area renders non-blank text.
+    LaunchedEffect(state.answerText) {
+        if (state.answerText.isNotBlank()) {
+            onAnswerRendered(state.answerText)
+        }
+    }
 
-    Box(
-        modifier = modifier.fillMaxSize(),
-    ) {
-        // Scrim — tap to dismiss
+    Box(modifier = modifier.fillMaxSize()) {
+        // Scrim — the tap-outside dismissal region. Any tap on the root that
+        // lands outside the card surface dismisses the overlay.
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .testTag("overlay_scrim")
                 .background(ScrimColor)
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
-                    onClick = handleDismiss,
+                    onClick = onDismiss,
                 )
         )
 
-        // Bottom sheet surface
+        // Card surface
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
+                .testTag("overlay_card")
                 .align(Alignment.BottomCenter)
                 .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
                 .clickable(
@@ -118,7 +171,7 @@ fun PromptSheetScreen(
 
                 Spacer(Modifier.height(12.dp))
 
-                // Header row
+                // Header row: title + close affordance
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -128,42 +181,44 @@ fun PromptSheetScreen(
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.weight(1f),
                     )
-                    if (isRunning) {
-                        IconButton(onClick = handleDismiss) {
-                            Icon(Icons.Default.Close, contentDescription = "Stop and close")
-                        }
-                    }
-                    IconButton(onClick = onOpenSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = "Open Settings")
+                    IconButton(onClick = onDismiss, modifier = Modifier.testTag("overlay_close")) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = if (state.isRunning) "Stop and close" else "Close",
+                        )
                     }
                 }
 
                 Spacer(Modifier.height(12.dp))
 
-                if (!isConfigured) {
-                    // Not configured — show hint
+                if (!state.isConfigured) {
                     NotConfiguredHint(onOpenSettings = onOpenSettings)
                 } else {
                     // Prompt input
                     OutlinedTextField(
-                        value = uiState.promptText,
-                        onValueChange = viewModel::onPromptChange,
+                        value = state.promptText,
+                        onValueChange = onPromptChange,
                         modifier = Modifier
                             .fillMaxWidth()
+                            .testTag("overlay_input")
                             .focusRequester(focusRequester),
                         label = { Text("Ask Hermes anything…") },
                         minLines = 1,
                         maxLines = 6,
-                        enabled = !isRunning,
+                        enabled = !state.isRunning,
                         keyboardOptions = KeyboardOptions(
                             capitalization = KeyboardCapitalization.Sentences,
                             imeAction = ImeAction.Send,
                         ),
                         keyboardActions = KeyboardActions(
-                            onSend = { if (!isRunning && uiState.promptText.isNotBlank()) viewModel.sendPrompt() },
+                            onSend = {
+                                if (!state.isRunning && state.promptText.isNotBlank()) {
+                                    onQuestionSubmitted(state.promptText.trim())
+                                }
+                            },
                         ),
                         trailingIcon = {
-                            if (isRunning) {
+                            if (state.isRunning) {
                                 CircularProgressIndicator(
                                     modifier = Modifier
                                         .size(24.dp)
@@ -172,13 +227,14 @@ fun PromptSheetScreen(
                                 )
                             } else {
                                 IconButton(
-                                    onClick = viewModel::sendPrompt,
-                                    enabled = uiState.promptText.isNotBlank(),
+                                    onClick = { onQuestionSubmitted(state.promptText.trim()) },
+                                    enabled = state.promptText.isNotBlank(),
+                                    modifier = Modifier.testTag("overlay_send"),
                                 ) {
                                     Icon(
                                         Icons.Default.Send,
                                         contentDescription = "Send",
-                                        tint = if (uiState.promptText.isNotBlank())
+                                        tint = if (state.promptText.isNotBlank())
                                             MaterialTheme.colorScheme.primary
                                         else
                                             MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
@@ -190,55 +246,26 @@ fun PromptSheetScreen(
 
                     Spacer(Modifier.height(12.dp))
 
-                    // Streamed / result / error text
+                    // Answer area — renders the app's response
                     AnimatedVisibility(
-                        visible = runState !is RunState.Idle,
+                        visible = state.isRunning || state.answerText.isNotBlank(),
                         enter = fadeIn(),
                         exit = fadeOut(),
                     ) {
-                        when (runState) {
-                            is RunState.Running -> {
-                                if (runState.streamedText.isNotBlank()) {
-                                    SelectionContainer {
-                                        Text(
-                                            text = runState.streamedText,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            modifier = Modifier.fillMaxWidth(),
-                                        )
-                                    }
-                                } else {
-                                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                                }
-                            }
-                            is RunState.Done -> {
-                                SelectionContainer {
-                                    Text(
-                                        text = runState.text,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        modifier = Modifier.fillMaxWidth(),
-                                    )
-                                }
-                            }
-                            is RunState.Error -> {
+                        if (state.isRunning && state.answerText.isBlank()) {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        } else {
+                            SelectionContainer {
                                 Text(
-                                    text = runState.message,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.error,
+                                    text = state.answerText,
+                                    style = MaterialTheme.typography.bodyMedium,
                                     modifier = Modifier.fillMaxWidth(),
                                 )
                             }
-                            is RunState.Idle -> { /* nothing */ }
                         }
                     }
                 }
             }
-        }
-    }
-
-    // Auto-focus the text field and show IME when the sheet appears
-    LaunchedEffect(isConfigured) {
-        if (isConfigured) {
-            focusRequester.requestFocus()
         }
     }
 }
@@ -262,8 +289,6 @@ private fun NotConfiguredHint(onOpenSettings: () -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         FilledTonalButton(onClick = onOpenSettings) {
-            Icon(Icons.Default.Settings, contentDescription = null)
-            Spacer(Modifier.width(6.dp))
             Text("Open Settings")
         }
     }

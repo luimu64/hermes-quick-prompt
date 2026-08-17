@@ -1,3 +1,8 @@
 <resources>
     <string name="app_name">Hermes Quick Prompt</string>
+
+    <!-- Overlay foreground-service notification -->
+    <string name="overlay_notification_channel_name">Overlay</string>
+    <string name="overlay_notification_channel_description">Shows while the Hermes overlay is on screen</string>
+    <string name="overlay_notification_text">Overlay active</string>
 </resources>
