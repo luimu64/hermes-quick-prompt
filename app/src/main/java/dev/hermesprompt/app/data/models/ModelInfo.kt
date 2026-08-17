@@ -1,6 +1,7 @@
 package dev.hermesprompt.app.data.models
 
 import kotlinx.serialization.Serializable
+import java.util.Locale
 
 /**
  * Metadata defining a model configuration available in Hermes Agent.
@@ -28,6 +29,37 @@ data class ModelInfo(
     val tags: List<String> = emptyList(),
 ) {
     /**
+     * Secondary constructor accepting [ProviderInfo] directly.
+     */
+    constructor(
+        id: String,
+        displayName: String,
+        provider: ProviderInfo,
+        description: String? = null,
+        contextWindow: Int? = null,
+        isReasoning: Boolean = false,
+        isCustom: Boolean = false,
+        isDefault: Boolean = false,
+        tags: List<String> = emptyList(),
+    ) : this(
+        id = id,
+        displayName = displayName,
+        providerId = provider.id,
+        description = description,
+        contextWindow = contextWindow,
+        isReasoning = isReasoning,
+        isCustom = isCustom,
+        isDefault = isDefault,
+        tags = tags,
+    )
+
+    /**
+     * Resolves the provider metadata from [ModelRegistry].
+     */
+    val provider: ProviderInfo
+        get() = ModelRegistry.getProvider(providerId)
+
+    /**
      * Technical identifier or fallback text.
      * E.g. "(Server Default)" when empty, or exact model ID string.
      */
@@ -47,19 +79,27 @@ data class ModelInfo(
     val formattedContextWindow: String?
         get() = contextWindow?.let { formatTokenCount(it) }
 
+    /**
+     * Label suitable for display in text fields or dropdown headers.
+     */
+    val fullDisplayLabel: String
+        get() = if (id.isBlank()) displayName else "$displayName ($id)"
+
     companion object {
         fun formatTokenCount(tokens: Int): String {
             return when {
                 tokens >= 1_000_000 -> {
                     val count = tokens / 1_000_000.0
-                    if (count % 1.0 == 0.0) "${count.toInt()}M" else String.format("%.1fM", count)
+                    if (count % 1.0 == 0.0) "${count.toInt()}M" else String.format(Locale.US, "%.1fM", count)
                 }
                 tokens >= 1_000 -> {
                     val count = tokens / 1_000.0
-                    if (count % 1.0 == 0.0) "${count.toInt()}k" else String.format("%.1fk", count)
+                    if (count % 1.0 == 0.0) "${count.toInt()}k" else String.format(Locale.US, "%.1fk", count)
                 }
                 else -> tokens.toString()
             }
         }
     }
 }
+
+typealias ModelOption = ModelInfo

@@ -19,6 +19,8 @@ data class ProviderInfo(
     val websiteUrl: String? = null,
     val order: Int = 100,
 ) {
+    val sortOrder: Int get() = order
+
     companion object {
         const val ID_SERVER_DEFAULT = "default"
         const val ID_NOUS = "nous"
@@ -33,3 +35,5 @@ data class ProviderInfo(
         const val ID_CUSTOM = "custom"
     }
 }
+
+typealias Provider = ProviderInfo

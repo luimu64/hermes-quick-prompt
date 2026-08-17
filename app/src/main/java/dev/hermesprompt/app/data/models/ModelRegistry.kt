@@ -57,7 +57,7 @@ object ModelRegistry {
 
     val GOOGLE_PROVIDER = ProviderInfo(
         id = ProviderInfo.ID_GOOGLE,
-        displayName = "Google Gemini",
+        displayName = "Google",
         description = "Gemini 2.5 Flash, 2.5 Pro, and 2.0 models",
         websiteUrl = "https://deepmind.google/technologies/gemini",
         order = 5,
@@ -102,6 +102,19 @@ object ModelRegistry {
         order = 99,
     )
 
+    // Aliases for compatibility
+    val PROVIDER_DEFAULT: ProviderInfo get() = DEFAULT_PROVIDER
+    val PROVIDER_NOUS: ProviderInfo get() = NOUS_PROVIDER
+    val PROVIDER_OPENROUTER: ProviderInfo get() = OPENROUTER_PROVIDER
+    val PROVIDER_ANTHROPIC: ProviderInfo get() = ANTHROPIC_PROVIDER
+    val PROVIDER_OPENAI: ProviderInfo get() = OPENAI_PROVIDER
+    val PROVIDER_GOOGLE: ProviderInfo get() = GOOGLE_PROVIDER
+    val PROVIDER_DEEPSEEK: ProviderInfo get() = DEEPSEEK_PROVIDER
+    val PROVIDER_GROQ: ProviderInfo get() = GROQ_PROVIDER
+    val PROVIDER_MISTRAL: ProviderInfo get() = MISTRAL_PROVIDER
+    val PROVIDER_OLLAMA: ProviderInfo get() = OLLAMA_PROVIDER
+    val PROVIDER_CUSTOM: ProviderInfo get() = CUSTOM_PROVIDER
+
     val providers: List<ProviderInfo> = listOf(
         DEFAULT_PROVIDER,
         NOUS_PROVIDER,
@@ -128,6 +141,8 @@ object ModelRegistry {
         isDefault = true,
         tags = listOf("default", "server"),
     )
+
+    val DEFAULT_MODEL: ModelInfo get() = SERVER_DEFAULT_MODEL
 
     // ── Curated Model Catalog ─────────────────────────────────────────────────
 
@@ -466,6 +481,8 @@ object ModelRegistry {
         ),
     )
 
+    val defaultModels: List<ModelInfo> get() = models
+
     private val modelMap: Map<String, ModelInfo> = models.associateBy { it.id.lowercase(Locale.ROOT) }
 
     /**
@@ -504,7 +521,6 @@ object ModelRegistry {
      */
     fun getModelsGroupedByProvider(modelsList: List<ModelInfo> = models): Map<ProviderInfo, List<ModelInfo>> {
         val grouped = LinkedHashMap<ProviderInfo, MutableList<ModelInfo>>()
-        // Initialize with providers in order
         for (provider in providers) {
             grouped[provider] = mutableListOf()
         }
@@ -512,7 +528,6 @@ object ModelRegistry {
             val provider = getProvider(model.providerId)
             grouped.getOrPut(provider) { mutableListOf() }.add(model)
         }
-        // Remove empty providers from map
         return grouped.filterValues { it.isNotEmpty() }
     }
 
@@ -538,6 +553,9 @@ object ModelRegistry {
 
         return createCustomModel(trimmed)
     }
+
+    /** Resolves a model ID string to a [ModelInfo] (alias for [findModel]). */
+    fun resolveModel(id: String?): ModelInfo = findModel(id)
 
     /**
      * Creates a structured [ModelInfo] for an arbitrary custom or unlisted model identifier.
@@ -574,30 +592,33 @@ object ModelRegistry {
     fun inferProviderId(modelId: String): String {
         val lower = modelId.trim().lowercase(Locale.ROOT)
         return when {
-            lower.startsWith("nous/") -> ProviderInfo.ID_NOUS
+            lower.startsWith("nous/") || lower.startsWith("nousresearch/") -> ProviderInfo.ID_NOUS
             lower.startsWith("openrouter/") -> ProviderInfo.ID_OPENROUTER
-            lower.startsWith("anthropic/") -> ProviderInfo.ID_ANTHROPIC
-            lower.startsWith("openai/") -> ProviderInfo.ID_OPENAI
-            lower.startsWith("google/") || lower.startsWith("gemini/") -> ProviderInfo.ID_GOOGLE
+            lower.startsWith("anthropic/") || lower.startsWith("claude") -> ProviderInfo.ID_ANTHROPIC
+            lower.startsWith("openai/") || lower.startsWith("gpt-") || lower.startsWith("o1") || lower.startsWith("o3") -> ProviderInfo.ID_OPENAI
+            lower.startsWith("google/") || lower.startsWith("gemini") -> ProviderInfo.ID_GOOGLE
             lower.startsWith("deepseek/") -> ProviderInfo.ID_DEEPSEEK
             lower.startsWith("groq/") -> ProviderInfo.ID_GROQ
             lower.startsWith("mistral/") -> ProviderInfo.ID_MISTRAL
-            lower.startsWith("ollama/") -> ProviderInfo.ID_OLLAMA
+            lower.startsWith("ollama/") || lower.startsWith("local/") -> ProviderInfo.ID_OLLAMA
             else -> ProviderInfo.ID_CUSTOM
         }
+    }
+
+    /**
+     * Infers a provider from a model ID string, returning null if unmapped.
+     */
+    fun inferProvider(modelId: String): ProviderInfo? {
+        val providerId = inferProviderId(modelId)
+        return if (providerId == ProviderInfo.ID_CUSTOM) null else getProvider(providerId)
     }
 
     /**
      * Formats a technical model ID into a presentable display string.
      */
     private fun formatCustomDisplayName(modelId: String): String {
-        val lastSegment = modelId.substringAfterLast('/')
-        // Capitalize words separated by hyphens/underscores/dots
-        val words = lastSegment.split('-', '_', '.').filter { it.isNotBlank() }
-        if (words.isEmpty()) return modelId
-        return words.joinToString(" ") { word ->
-            word.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
-        }
+        val leaf = modelId.substringAfterLast('/')
+        return leaf.ifBlank { modelId }
     }
 
     /**
@@ -622,7 +643,6 @@ object ModelRegistry {
             }
         }
 
-        // Sort by score descending, then by original index
         val sortedResults = scored
             .sortedByDescending { it.second }
             .map { it.first }
@@ -635,34 +655,81 @@ object ModelRegistry {
         return sortedResults
     }
 
-    private fun calculateMatchScore(model: ModelInfo, query: String): Int {
-        val modelIdLower = model.id.lowercase(Locale.ROOT)
-        val displayNameLower = model.displayName.lowercase(Locale.ROOT)
-        val provider = getProvider(model.providerId)
-        val providerNameLower = provider.displayName.lowercase(Locale.ROOT)
-        val descLower = model.description?.lowercase(Locale.ROOT) ?: ""
+    /**
+     * Filters models by search query using fuzzy matching and token decomposition.
+     */
+    fun filterModels(query: String, modelsList: List<ModelInfo> = models): List<ModelInfo> {
+        val cleanQuery = query.trim()
+        if (cleanQuery.isEmpty()) return modelsList
 
-        var score = 0
+        return modelsList
+            .mapNotNull { model ->
+                val score = calculateMatchScore(model, cleanQuery.lowercase(Locale.ROOT))
+                if (score > 0) Pair(model, score) else null
+            }
+            .sortedWith(
+                compareByDescending<Pair<ModelInfo, Int>> { it.second }
+                    .thenBy { it.first.provider.order }
+                    .thenBy { it.first.displayName }
+            )
+            .map { it.first }
+    }
+
+    private fun calculateMatchScore(model: ModelInfo, q: String): Int {
+        val idLower = model.id.lowercase(Locale.ROOT)
+        val nameLower = model.displayName.lowercase(Locale.ROOT)
+        val provider = getProvider(model.providerId)
+        val providerLower = provider.displayName.lowercase(Locale.ROOT)
+        val descLower = (model.description ?: "").lowercase(Locale.ROOT)
 
         // Exact match
-        if (modelIdLower == query) score += 100
-        if (displayNameLower == query) score += 90
+        if (idLower == q || nameLower == q) return 1000
 
         // Prefix match
-        if (displayNameLower.startsWith(query)) score += 50
-        if (modelIdLower.startsWith(query)) score += 40
+        if (nameLower.startsWith(q)) return 800
+        if (idLower.startsWith(q)) return 750
 
         // Segment prefix (e.g. typing "sonnet" matches "claude-3.5-sonnet")
-        val segments = modelIdLower.split('/', '-', '_')
-        if (segments.any { it.startsWith(query) }) score += 35
+        val segments = idLower.split('/', '-', '_')
+        if (segments.any { it.startsWith(q) }) return 600
 
-        // Substring match
-        if (displayNameLower.contains(query)) score += 30
-        if (modelIdLower.contains(query)) score += 20
-        if (providerNameLower.contains(query)) score += 15
-        if (model.tags.any { it.lowercase(Locale.ROOT).contains(query) }) score += 15
-        if (descLower.contains(query)) score += 5
+        // Substring match in name
+        if (nameLower.contains(q)) return 500
+        // Substring match in ID
+        if (idLower.contains(q)) return 400
+        // Substring match in provider name
+        if (providerLower.contains(q)) return 300
+        // Tag match
+        if (model.tags.any { it.lowercase(Locale.ROOT).contains(q) }) return 250
+        // Substring match in description
+        if (descLower.contains(q)) return 200
 
-        return score
+        // Multi-word token match: all words in query appear somewhere in model metadata
+        val tokens = q.split(" ", "-", "_", "/").filter { it.isNotBlank() }
+        if (tokens.size > 1) {
+            val allTokensMatch = tokens.all { token ->
+                nameLower.contains(token) || idLower.contains(token) || providerLower.contains(token) || descLower.contains(token)
+            }
+            if (allTokensMatch) return 350
+        }
+
+        // Fuzzy subsequence match in name or ID (e.g. "c37s" matching "claude-3-7-sonnet")
+        if (isSubsequenceMatch(q, nameLower)) return 150
+        if (isSubsequenceMatch(q, idLower)) return 100
+
+        return 0
+    }
+
+    private fun isSubsequenceMatch(query: String, target: String): Boolean {
+        if (query.length > target.length) return false
+        var queryIdx = 0
+        var targetIdx = 0
+        while (queryIdx < query.length && targetIdx < target.length) {
+            if (query[queryIdx] == target[targetIdx]) {
+                queryIdx++
+            }
+            targetIdx++
+        }
+        return queryIdx == query.length
     }
 }
