@@ -16,6 +16,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.hermesprompt.app.ui.components.ModelSelectorDropdown
 
 /**
  * Settings screen — the default launcher destination.
@@ -116,13 +117,9 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
 
-            OutlinedTextField(
-                value = uiState.model,
-                onValueChange = viewModel::onModelChange,
-                label = { Text("Model (optional)") },
-                placeholder = { Text("openrouter/anthropic/claude-sonnet-4") },
-                supportingText = { Text("Leave blank to use the server default.") },
-                singleLine = true,
+            ModelSelectorDropdown(
+                selectedModel = uiState.model,
+                onModelSelected = viewModel::onModelChange,
                 modifier = Modifier.fillMaxWidth(),
             )
 
