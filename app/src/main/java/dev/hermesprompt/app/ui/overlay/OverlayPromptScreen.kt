@@ -75,8 +75,7 @@ data class OverlayUiState(
     val promptText: String = "",
     val answerText: String = "",
     val isRunning: Boolean = false,
-    val isConfigured: Boolean = true,
-    val model: String = "",
+    val isConfigured: Boolean = false,
 )
 
 /**
@@ -235,7 +234,7 @@ fun OverlayPromptScreen(
 
                     Spacer(Modifier.height(12.dp))
 
-                    // Header row: title + optional model badge + close affordance
+                    // Header row: title + close affordance
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -244,26 +243,6 @@ fun OverlayPromptScreen(
                             text = "Hermes",
                             style = MaterialTheme.typography.titleMedium,
                         )
-                        if (state.model.isNotBlank()) {
-                            val modelInfo = remember(state.model) {
-                                dev.hermesprompt.app.data.models.ModelRegistry.resolveModel(state.model)
-                            }
-                            Spacer(Modifier.width(8.dp))
-                            Surface(
-                                shape = RoundedCornerShape(4.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant,
-                                modifier = Modifier.padding(horizontal = 2.dp),
-                            ) {
-                                Text(
-                                    text = modelInfo.displayName,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                    maxLines = 1,
-                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                )
-                            }
-                        }
                         Spacer(Modifier.weight(1f))
                         IconButton(onClick = handleDismiss, modifier = Modifier.testTag("overlay_close")) {
                             Icon(

@@ -75,7 +75,6 @@ class PromptViewModel(
                     baseUrl = settings.serverUrl,
                     apiKey = settings.apiKey,
                     prompt = prompt,
-                    model = settings.model.takeIf { it.isNotBlank() },
                     profile = settings.profile,
                 ).collect { event ->
                     when (event) {

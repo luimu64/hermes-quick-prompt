@@ -1,7 +1,5 @@
 package dev.hermesprompt.app.data
 
-import dev.hermesprompt.app.data.models.ModelInfo
-import dev.hermesprompt.app.data.models.ModelRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -12,7 +10,6 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.addJsonObject
@@ -91,18 +88,16 @@ class HermesApi(private val client: OkHttpClient) {
      * Starts a new Hermes run or streams chat completions.
      *
      * Streams completions via `/v1/chat/completions` (OpenAI streaming API), which
-     * routes directly to the configured provider/backend (such as Bifrost) and
-     * cleanly supports per-request model overrides and profile selection.
+     * routes directly to the configured provider/backend and cleanly supports
+     * profile selection.
      */
     fun promptStream(
         baseUrl: String,
         apiKey: String,
         prompt: String,
-        model: String?,
         profile: String = "",
     ): Flow<HermesEvent> = flow {
         val prof = profile.trim().takeIf { it.isNotBlank() }
-        val modelParam = model?.trim()?.takeIf { it.isNotBlank() }
 
         val requestPayload = buildJsonObject {
             put("stream", true)
@@ -111,9 +106,6 @@ class HermesApi(private val client: OkHttpClient) {
                     put("role", "user")
                     put("content", prompt)
                 }
-            }
-            if (modelParam != null) {
-                put("model", modelParam)
             }
             if (prof != null) {
                 put("profile", prof)
@@ -321,12 +313,12 @@ class HermesApi(private val client: OkHttpClient) {
 
     /** Sealed result of connection and authentication testing. */
     sealed class AuthResult {
-        data class Success(val resolvedUrl: String, val models: List<ModelInfo>) : AuthResult()
+        data class Success(val resolvedUrl: String) : AuthResult()
         data class Failure(val message: String) : AuthResult()
     }
 
     private sealed class AuthProbeResult {
-        data class Success(val resolvedUrl: String, val models: List<ModelInfo>) : AuthProbeResult()
+        data class Success(val resolvedUrl: String) : AuthProbeResult()
         data class AuthFailed(val message: String) : AuthProbeResult()
         data object HtmlDashboard : AuthProbeResult()
         data class HttpError(val code: Int, val message: String) : AuthProbeResult()
@@ -358,32 +350,6 @@ class HermesApi(private val client: OkHttpClient) {
 
         fun probe(candidateUrl: String): AuthProbeResult {
             return try {
-                // Try /api/model/options first
-                val optionsUrl = apiUrl(candidateUrl, profile, "/api/model/options")
-                val reqOptions = Request.Builder()
-                    .url(optionsUrl)
-                    .addHeader("Authorization", "Bearer $trimmedKey")
-                    .addHeader("Accept", "application/json")
-                    .get()
-                    .build()
-
-                client.newCall(reqOptions).execute().use { resp ->
-                    val body = resp.body?.string().orEmpty()
-                    if (resp.isSuccessful) {
-                        if (body.trimStart().startsWith("<")) {
-                            return AuthProbeResult.HtmlDashboard
-                        }
-                        val models = parseModelOptionsJson(body)
-                        if (models.isNotEmpty()) {
-                            return AuthProbeResult.Success(candidateUrl, models)
-                        }
-                    } else if (resp.code == 401 || resp.code == 403) {
-                        val errMsg = extractErrorMessage(body, resp.code)
-                        return AuthProbeResult.AuthFailed(errMsg)
-                    }
-                }
-
-                // Fallback: try /v1/models
                 val v1Url = apiUrl(candidateUrl, profile, "/v1/models")
                 val reqV1 = Request.Builder()
                     .url(v1Url)
@@ -398,11 +364,7 @@ class HermesApi(private val client: OkHttpClient) {
                         if (body.trimStart().startsWith("<")) {
                             return AuthProbeResult.HtmlDashboard
                         }
-                        val models = parseV1ModelsJson(body)
-                        if (models.isNotEmpty()) {
-                            return AuthProbeResult.Success(candidateUrl, models)
-                        }
-                        return AuthProbeResult.Success(candidateUrl, listOf(ModelRegistry.SERVER_DEFAULT_MODEL))
+                        return AuthProbeResult.Success(candidateUrl)
                     } else if (resp.code == 401 || resp.code == 403) {
                         val errMsg = extractErrorMessage(body, resp.code)
                         return AuthProbeResult.AuthFailed(errMsg)
@@ -419,7 +381,7 @@ class HermesApi(private val client: OkHttpClient) {
         // 1. Probe the provided URL
         val primaryResult = probe(urlCandidate)
         if (primaryResult is AuthProbeResult.Success) {
-            return@withContext AuthResult.Success(primaryResult.resolvedUrl, primaryResult.models)
+            return@withContext AuthResult.Success(primaryResult.resolvedUrl)
         }
 
         // 2. If primary was rejected or was web HTML, and no port was given, check Hermes port 8642
@@ -428,223 +390,23 @@ class HermesApi(private val client: OkHttpClient) {
             val port8642Http = "http://${parsedUri.host}:8642"
             val fallbackHttp = probe(port8642Http)
             if (fallbackHttp is AuthProbeResult.Success) {
-                return@withContext AuthResult.Success(fallbackHttp.resolvedUrl, fallbackHttp.models)
+                return@withContext AuthResult.Success(fallbackHttp.resolvedUrl)
             }
 
             val port8642Https = "https://${parsedUri.host}:8642"
             val fallbackHttps = probe(port8642Https)
             if (fallbackHttps is AuthProbeResult.Success) {
-                return@withContext AuthResult.Success(fallbackHttps.resolvedUrl, fallbackHttps.models)
+                return@withContext AuthResult.Success(fallbackHttps.resolvedUrl)
             }
         }
 
         when (primaryResult) {
+            is AuthProbeResult.Success -> AuthResult.Success(primaryResult.resolvedUrl)
             is AuthProbeResult.AuthFailed -> AuthResult.Failure("Authentication failed: ${primaryResult.message}")
             is AuthProbeResult.HtmlDashboard -> AuthResult.Failure("Connected to Web Dashboard instead of API Server. Please use the API port (e.g. http://${parsedUri?.host ?: "host"}:8642).")
             is AuthProbeResult.HttpError -> AuthResult.Failure("Server error (HTTP ${primaryResult.code}): ${primaryResult.message}")
             is AuthProbeResult.NetworkError -> AuthResult.Failure("Cannot reach server: ${primaryResult.message}")
-            else -> AuthResult.Failure("Authentication failed.")
         }
-    }
-
-    /**
-     * Fetches the list of models exposed by the Hermes server / gateway.
-     * Checks `GET /api/model/options` first (Hermes rich catalog endpoint),
-     * and falls back to `GET /v1/models` (standard OpenAI discovery endpoint).
-     *
-     * @param baseUrl Normalized server URL.
-     * @param apiKey Bearer token.
-     * @param profile Optional profile name.
-     * @return List of [ModelInfo] objects discovered from the server.
-     */
-    suspend fun listModels(
-        baseUrl: String,
-        apiKey: String,
-        profile: String = "",
-    ): List<ModelInfo> = kotlinx.coroutines.withContext(Dispatchers.IO) {
-        if (baseUrl.isBlank()) return@withContext emptyList()
-
-        // 1. Try /api/model/options first (Hermes rich catalog endpoint)
-        val optionsResult = fetchModelOptions(baseUrl, apiKey, profile)
-        if (optionsResult.isNotEmpty()) {
-            return@withContext optionsResult
-        }
-
-        // 2. Fallback to /v1/models (Standard OpenAI endpoint)
-        val v1ModelsResult = fetchV1Models(baseUrl, apiKey, profile)
-        if (v1ModelsResult.isNotEmpty()) {
-            return@withContext v1ModelsResult
-        }
-
-        emptyList()
-    }
-
-    private fun fetchModelOptions(baseUrl: String, apiKey: String, profile: String): List<ModelInfo> {
-        return try {
-            val url = apiUrl(baseUrl, profile, "/api/model/options")
-            val request = Request.Builder()
-                .url(url)
-                .apply {
-                    if (apiKey.isNotBlank()) {
-                        addHeader("Authorization", "Bearer $apiKey")
-                    }
-                    addHeader("Accept", "application/json")
-                }
-                .get()
-                .build()
-
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return emptyList()
-                val body = response.body?.string() ?: return emptyList()
-                parseModelOptionsJson(body)
-            }
-        } catch (_: Throwable) {
-            emptyList()
-        }
-    }
-
-    private fun fetchV1Models(baseUrl: String, apiKey: String, profile: String): List<ModelInfo> {
-        return try {
-            val url = apiUrl(baseUrl, profile, "/v1/models")
-            val request = Request.Builder()
-                .url(url)
-                .apply {
-                    if (apiKey.isNotBlank()) {
-                        addHeader("Authorization", "Bearer $apiKey")
-                    }
-                    addHeader("Accept", "application/json")
-                }
-                .get()
-                .build()
-
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return emptyList()
-                val body = response.body?.string() ?: return emptyList()
-                parseV1ModelsJson(body)
-            }
-        } catch (_: Throwable) {
-            emptyList()
-        }
-    }
-
-    /**
-     * Parses the payload from Hermes `/api/model/options` into rich [ModelInfo] instances.
-     */
-    fun parseModelOptionsJson(body: String): List<ModelInfo> {
-        val result = mutableListOf<ModelInfo>()
-        result.add(ModelRegistry.SERVER_DEFAULT_MODEL)
-
-        try {
-            val jsonElement = json.parseToJsonElement(body)
-            val rootObj = jsonElement as? JsonObject ?: return emptyList()
-            val providersArray = rootObj["providers"] as? JsonArray ?: return emptyList()
-
-            for (providerElem in providersArray) {
-                val pObj = providerElem as? JsonObject ?: continue
-                val slug = pObj["slug"]?.jsonPrimitive?.contentOrNull ?: continue
-                val name = pObj["name"]?.jsonPrimitive?.contentOrNull ?: slug
-                val isCurrent = pObj["is_current"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
-                    ?: (pObj["is_current"]?.toString() == "true")
-                val isAuthenticated = pObj["authenticated"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
-                    ?: (pObj["authenticated"]?.toString() == "true")
-                val warning = pObj["warning"]?.jsonPrimitive?.contentOrNull
-
-                val providerInfo = dev.hermesprompt.app.data.models.ProviderInfo(
-                    id = slug,
-                    displayName = name,
-                    description = if (isCurrent) "Active server provider" else warning ?: "Provided by server ($name)",
-                    order = if (isCurrent) 1 else if (isAuthenticated) 5 else 50,
-                )
-                ModelRegistry.registerProvider(providerInfo)
-
-                val modelsArray = pObj["models"] as? JsonArray
-                if (modelsArray != null) {
-                    for (modelElem in modelsArray) {
-                        val modelId = when (modelElem) {
-                            is JsonPrimitive -> modelElem.contentOrNull
-                            is JsonObject -> modelElem["id"]?.jsonPrimitive?.contentOrNull
-                                ?: modelElem["name"]?.jsonPrimitive?.contentOrNull
-                            else -> null
-                        } ?: continue
-
-                        if (modelId.isBlank()) continue
-
-                        val isReasoning = modelId.contains("reasoning", ignoreCase = true) ||
-                            modelId.contains("r1", ignoreCase = true) ||
-                            modelId.contains("o1", ignoreCase = true) ||
-                            modelId.contains("o3", ignoreCase = true) ||
-                            modelId.contains("thinking", ignoreCase = true)
-
-                        val displayName = formatModelDisplayName(modelId)
-
-                        val modelInfo = ModelInfo(
-                            id = modelId,
-                            displayName = displayName,
-                            providerId = slug,
-                            description = "$name • $modelId",
-                            isReasoning = isReasoning,
-                            isCustom = false,
-                            isDefault = false,
-                            tags = listOf(slug, name.lowercase(java.util.Locale.ROOT)),
-                        )
-                        result.add(modelInfo)
-                    }
-                }
-            }
-        } catch (_: Exception) {
-            return emptyList()
-        }
-
-        return if (result.size > 1) result else emptyList()
-    }
-
-    /**
-     * Parses standard OpenAI `/v1/models` format into [ModelInfo] instances.
-     */
-    fun parseV1ModelsJson(body: String): List<ModelInfo> {
-        val result = mutableListOf<ModelInfo>()
-        result.add(ModelRegistry.SERVER_DEFAULT_MODEL)
-
-        try {
-            val jsonElement = json.parseToJsonElement(body)
-            val dataArray = when (jsonElement) {
-                is JsonObject -> jsonElement["data"] as? JsonArray ?: jsonElement["models"] as? JsonArray
-                is JsonArray -> jsonElement
-                else -> null
-            } ?: return emptyList()
-
-            for (elem in dataArray) {
-                val id = when (elem) {
-                    is JsonObject -> elem["id"]?.jsonPrimitive?.contentOrNull
-                        ?: elem["name"]?.jsonPrimitive?.contentOrNull
-                        ?: elem["model"]?.jsonPrimitive?.contentOrNull
-                    is JsonPrimitive -> elem.contentOrNull
-                    else -> null
-                } ?: continue
-
-                if (id.isBlank()) continue
-
-                val resolved = ModelRegistry.findModel(id)
-                result.add(resolved)
-            }
-        } catch (_: Exception) {
-            return emptyList()
-        }
-
-        return if (result.size > 1) result else emptyList()
-    }
-
-    private fun formatModelDisplayName(modelId: String): String {
-        val known = ModelRegistry.findCuratedModel(modelId)
-        if (known != null && !known.isCustom && !known.isDefault) {
-            return known.displayName
-        }
-        if (modelId.contains('/')) {
-            val prefix = modelId.substringBeforeLast('/')
-            val leaf = modelId.substringAfterLast('/')
-            return "$leaf ($prefix)"
-        }
-        return modelId
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────

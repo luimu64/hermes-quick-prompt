@@ -17,10 +17,7 @@ import kotlinx.coroutines.launch
 data class SettingsUiState(
     val serverUrl: String = "",
     val apiKey: String = "",
-    val model: String = "",
     val profile: String = "",
-    val availableModels: List<dev.hermesprompt.app.data.models.ModelInfo> = emptyList(),
-    val isLoadingModels: Boolean = false,
     val isDirty: Boolean = false,
     val profileError: String? = null,
     val serverUrlError: String? = null,
@@ -48,9 +45,8 @@ class SettingsViewModel(
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
 
-    private var savedSettings = AppSettings("", "", "")
+    private var savedSettings = AppSettings("", "")
     private var testJob: Job? = null
-    private var modelsJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -60,13 +56,9 @@ class SettingsViewModel(
                     current.copy(
                         serverUrl = settings.serverUrl,
                         apiKey = settings.apiKey,
-                        model = settings.model,
                         profile = settings.profile,
                         isDirty = false,
                     )
-                }
-                if (settings.isConfigured) {
-                    fetchModels(settings.serverUrl, settings.apiKey, settings.profile)
                 }
             }
         }
@@ -75,12 +67,10 @@ class SettingsViewModel(
     private fun checkDirty(
         serverUrl: String = _uiState.value.serverUrl,
         apiKey: String = _uiState.value.apiKey,
-        model: String = _uiState.value.model,
         profile: String = _uiState.value.profile,
     ): Boolean {
         return serverUrl != savedSettings.serverUrl ||
                 apiKey != savedSettings.apiKey ||
-                model != savedSettings.model ||
                 profile != savedSettings.profile
     }
 
@@ -101,15 +91,6 @@ class SettingsViewModel(
                 apiKey = key,
                 testResult = null,
                 isDirty = checkDirty(apiKey = key),
-            )
-        }
-    }
-
-    fun onModelChange(model: String) {
-        _uiState.update {
-            it.copy(
-                model = model,
-                isDirty = checkDirty(model = model),
             )
         }
     }
@@ -148,7 +129,6 @@ class SettingsViewModel(
             val newSettings = AppSettings(
                 serverUrl = normalizedUrl,
                 apiKey = state.apiKey.trim(),
-                model = state.model.trim(),
                 profile = normalizedProfile,
             )
             settingsStore.save(newSettings)
@@ -197,7 +177,6 @@ class SettingsViewModel(
                         it.copy(
                             isTesting = false,
                             serverUrl = resolvedUrl,
-                            availableModels = authResult.models,
                             testResult = TestResult.Success,
                             isDirty = checkDirty(serverUrl = resolvedUrl),
                         )
@@ -207,54 +186,12 @@ class SettingsViewModel(
                     _uiState.update {
                         it.copy(
                             isTesting = false,
-                            availableModels = emptyList(),
                             testResult = TestResult.Failure(authResult.message),
                         )
                     }
                 }
             }
         }
-    }
-
-    fun fetchModels(serverUrl: String, apiKey: String, profile: String) {
-        val urlResult = SettingsValidator.normalize(serverUrl)
-        if (urlResult !is SettingsValidator.UrlResult.Valid) return
-        val url = urlResult.url
-        val prof = SettingsValidator.normalizeProfile(profile) ?: ""
-        val key = apiKey.trim()
-        if (key.isBlank()) {
-            _uiState.update { it.copy(availableModels = emptyList()) }
-            return
-        }
-
-        modelsJob?.cancel()
-        modelsJob = viewModelScope.launch {
-            _uiState.update { it.copy(isLoadingModels = true) }
-            val authResult = hermesApi.testAuth(url, key, prof)
-            when (authResult) {
-                is HermesApi.AuthResult.Success -> {
-                    _uiState.update {
-                        it.copy(
-                            availableModels = authResult.models,
-                            isLoadingModels = false,
-                        )
-                    }
-                }
-                is HermesApi.AuthResult.Failure -> {
-                    _uiState.update {
-                        it.copy(
-                            availableModels = emptyList(),
-                            isLoadingModels = false,
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    fun refreshModels() {
-        val state = _uiState.value
-        fetchModels(state.serverUrl, state.apiKey, state.profile)
     }
 
     fun clearTestResult() {

@@ -16,7 +16,6 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import dev.hermesprompt.app.ui.components.ModelSelectorDropdown
 
 /**
  * Settings screen — the default launcher destination.
@@ -114,15 +113,6 @@ fun SettingsScreen(
                 },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                modifier = Modifier.fillMaxWidth(),
-            )
-
-            ModelSelectorDropdown(
-                selectedModel = uiState.model,
-                onModelSelected = viewModel::onModelChange,
-                availableModels = uiState.availableModels,
-                isLoadingModels = uiState.isLoadingModels,
-                onRefreshModels = viewModel::refreshModels,
                 modifier = Modifier.fillMaxWidth(),
             )
 

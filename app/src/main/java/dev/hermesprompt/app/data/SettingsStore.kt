@@ -18,7 +18,6 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
  * Persists:
  *   - [serverUrl] — the normalized base URL (e.g. "https://hermes.example.com")
  *   - [apiKey]    — the Bearer token; stored in DataStore, never in BuildConfig
- *   - [model]     — optional model override (empty = server default)
  *   - [profile]   — optional profile name (empty = default profile)
  */
 class SettingsStore(context: Context) {
@@ -28,7 +27,6 @@ class SettingsStore(context: Context) {
     companion object {
         private val KEY_SERVER_URL = stringPreferencesKey("server_url")
         private val KEY_API_KEY = stringPreferencesKey("api_key")
-        private val KEY_MODEL = stringPreferencesKey("model")
         private val KEY_PROFILE = stringPreferencesKey("profile")
     }
 
@@ -37,7 +35,6 @@ class SettingsStore(context: Context) {
         AppSettings(
             serverUrl = prefs[KEY_SERVER_URL] ?: "",
             apiKey = prefs[KEY_API_KEY] ?: "",
-            model = prefs[KEY_MODEL] ?: "",
             profile = prefs[KEY_PROFILE] ?: "",
         )
     }
@@ -47,7 +44,6 @@ class SettingsStore(context: Context) {
         store.edit { prefs ->
             prefs[KEY_SERVER_URL] = settings.serverUrl
             prefs[KEY_API_KEY] = settings.apiKey
-            prefs[KEY_MODEL] = settings.model
             prefs[KEY_PROFILE] = settings.profile
         }
     }
@@ -59,7 +55,6 @@ class SettingsStore(context: Context) {
 data class AppSettings(
     val serverUrl: String,
     val apiKey: String,
-    val model: String,
     val profile: String = "",
 ) {
     /** True if the minimum required fields are filled in. */

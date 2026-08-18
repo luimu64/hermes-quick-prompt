@@ -311,7 +311,7 @@ class OverlayLifecycleE2ETest {
         runBlocking {
             val store = (targetContext.applicationContext as HermesPromptApp).container.settingsStore
             originalSettings = store.settingsFlow.first()
-            store.save(AppSettings(serverUrl = "http://127.0.0.1:1", apiKey = "test-key", model = "", profile = ""))
+            store.save(AppSettings(serverUrl = "http://127.0.0.1:1", apiKey = "test-key", profile = ""))
         }
     }
 
@@ -527,7 +527,6 @@ class OverlayLifecycleE2ETest {
                     originalSettings.copy(
                         serverUrl = "http://127.0.0.1:$port",
                         apiKey = "test-key",
-                        model = "",
                         profile = "",
                     )
                 )

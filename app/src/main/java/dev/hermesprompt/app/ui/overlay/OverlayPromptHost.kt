@@ -219,7 +219,6 @@ object OverlayPromptHost : OverlayContent {
                     answerText = answerText,
                     isRunning = runState is RunState.Running,
                     isConfigured = s.settings.isConfigured,
-                    model = s.settings.model,
                 )
             }
         }
