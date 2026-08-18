@@ -15,6 +15,10 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.addJsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -45,6 +49,7 @@ class HermesApi(private val client: OkHttpClient) {
     private data class StartRunRequest(
         val input: String,
         val model: String? = null,
+        val profile: String? = null,
         @SerialName("session_id") val sessionId: String? = null,
     )
 
@@ -79,51 +84,122 @@ class HermesApi(private val client: OkHttpClient) {
      * an empty profile keeps the plain path (default profile).
      */
     private fun apiUrl(baseUrl: String, profile: String, path: String): String {
-        val prefix = profile.trim().takeIf { it.isNotEmpty() }?.let { "/p/$it" } ?: ""
-        return "$baseUrl$prefix$path"
+        return "$baseUrl$path"
     }
 
     /**
-     * Starts a new Hermes run.
+     * Starts a new Hermes run or streams chat completions.
      *
-     * @param baseUrl Normalized server URL (no trailing slash).
-     * @param apiKey Bearer token.
-     * @param prompt The user's text prompt.
-     * @param model Optional model override; omitted from the request when blank.
-     * @param profile Optional profile name; blank routes to the default profile.
-     * @return [StartRunResponse] on HTTP 202.
-     * @throws IOException on network error.
-     * @throws HermesApiException on non-2xx response.
+     * Streams completions via `/v1/chat/completions` (OpenAI streaming API), which
+     * routes directly to the configured provider/backend (such as Bifrost) and
+     * cleanly supports per-request model overrides and profile selection.
      */
-    suspend fun startRun(
+    fun promptStream(
         baseUrl: String,
         apiKey: String,
         prompt: String,
         model: String?,
         profile: String = "",
-    ): StartRunResponse = kotlinx.coroutines.withContext(Dispatchers.IO) {
-        val body = StartRunRequest(
-            input = prompt,
-            model = model?.takeIf { it.isNotBlank() },
-            sessionId = "hermes-quick-prompt",
-        )
-        val bodyJson = json.encodeToString(StartRunRequest.serializer(), body)
+    ): Flow<HermesEvent> = flow {
+        val prof = profile.trim().takeIf { it.isNotBlank() }
+        val modelParam = model?.trim()?.takeIf { it.isNotBlank() }
+
+        val requestPayload = buildJsonObject {
+            put("stream", true)
+            putJsonArray("messages") {
+                addJsonObject {
+                    put("role", "user")
+                    put("content", prompt)
+                }
+            }
+            if (modelParam != null) {
+                put("model", modelParam)
+            }
+            if (prof != null) {
+                put("profile", prof)
+            }
+        }
+
+        val bodyJson = json.encodeToString(JsonObject.serializer(), requestPayload)
 
         val request = Request.Builder()
-            .url(apiUrl(baseUrl, profile, "/v1/runs"))
+            .url(apiUrl(baseUrl, profile, "/v1/chat/completions"))
             .addHeader("Authorization", "Bearer $apiKey")
+            .addHeader("Accept", "text/event-stream")
+            .apply {
+                if (prof != null) {
+                    addHeader("X-Hermes-Profile", prof)
+                }
+            }
             .post(bodyJson.toRequestBody(JSON_MEDIA_TYPE))
             .build()
 
-        client.newCall(request).execute().use { response ->
-            val responseBody = response.body?.string() ?: ""
+        val call = client.newCall(request)
+
+        try {
+            val response = call.execute()
             if (!response.isSuccessful) {
-                val errorMsg = extractErrorMessage(responseBody, response.code)
-                throw HermesApiException(response.code, errorMsg)
+                val errorBody = response.body?.string().orEmpty()
+                val msg = extractErrorMessage(errorBody, response.code)
+                response.close()
+                emit(HermesEvent.ErrorEvent("Error ${response.code}: $msg"))
+                return@flow
             }
-            json.decodeFromString(StartRunResponse.serializer(), responseBody)
+
+            val body = response.body
+            if (body == null) {
+                emit(HermesEvent.ErrorEvent("Empty response body"))
+                return@flow
+            }
+
+            try {
+                val reader = body.source().inputStream().bufferedReader(Charsets.UTF_8)
+                val fullAccumulated = java.lang.StringBuilder()
+
+                for (line in reader.lineSequence()) {
+                    if (!coroutineContext.isActive) break
+
+                    val trimmed = line.trim()
+                    if (trimmed.isEmpty() || trimmed.startsWith(":")) continue
+
+                    if (trimmed.startsWith("data:")) {
+                        val payload = trimmed.removePrefix("data:").trim()
+                        if (payload == "[DONE]") {
+                            emit(HermesEvent.RunCompleted(fullAccumulated.toString()))
+                            emit(HermesEvent.Done)
+                            return@flow
+                        }
+
+                        try {
+                            val chunkObj = json.decodeFromString(JsonObject.serializer(), payload)
+                            val choices = chunkObj["choices"] as? JsonArray
+                            val firstChoice = choices?.firstOrNull() as? JsonObject
+                            val deltaObj = firstChoice?.get("delta") as? JsonObject
+                            val content = deltaObj?.get("content")?.jsonPrimitive?.contentOrNull
+
+                            if (!content.isNullOrEmpty()) {
+                                fullAccumulated.append(content)
+                                emit(HermesEvent.MessageDelta(content))
+                            }
+                        } catch (_: Exception) {
+                            // Non-JSON or unrecognized SSE chunk
+                        }
+                    }
+                }
+
+                if (fullAccumulated.isNotEmpty()) {
+                    emit(HermesEvent.RunCompleted(fullAccumulated.toString()))
+                }
+                emit(HermesEvent.Done)
+            } finally {
+                response.close()
+            }
+        } catch (e: IOException) {
+            if (coroutineContext.isActive) {
+                emit(HermesEvent.ErrorEvent("Cannot reach server: ${e.message}"))
+            }
         }
-    }
+    }.flowOn(Dispatchers.IO)
 
     /**
      * Opens the SSE event stream for [runId] and emits parsed [HermesEvent]s.

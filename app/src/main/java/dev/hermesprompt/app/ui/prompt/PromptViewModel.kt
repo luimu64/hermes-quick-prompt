@@ -70,32 +70,12 @@ class PromptViewModel(
         runJob = viewModelScope.launch {
             _uiState.update { it.copy(runState = RunState.Running("", "")) }
 
-            // Start the run
-            val startResponse = try {
-                hermesApi.startRun(
+            try {
+                hermesApi.promptStream(
                     baseUrl = settings.serverUrl,
                     apiKey = settings.apiKey,
                     prompt = prompt,
                     model = settings.model.takeIf { it.isNotBlank() },
-                    profile = settings.profile,
-                )
-            } catch (e: HermesApiException) {
-                _uiState.update { it.copy(runState = RunState.Error("Error ${e.code}: ${e.message}")) }
-                return@launch
-            } catch (e: Exception) {
-                _uiState.update { it.copy(runState = RunState.Error("Cannot reach server: ${e.message}")) }
-                return@launch
-            }
-
-            val runId = startResponse.runId
-            _uiState.update { it.copy(runState = RunState.Running(runId, "")) }
-
-            // Stream events
-            try {
-                hermesApi.runEvents(
-                    baseUrl = settings.serverUrl,
-                    apiKey = settings.apiKey,
-                    runId = runId,
                     profile = settings.profile,
                 ).collect { event ->
                     when (event) {
@@ -109,7 +89,6 @@ class PromptViewModel(
                             _uiState.update { it.copy(runState = RunState.Done(event.output)) }
                         }
                         is HermesApi.HermesEvent.AssistantCompleted -> {
-                            // Only use as fallback if we don't already have a Done state
                             _uiState.update { uiState ->
                                 if (uiState.runState !is RunState.Done) {
                                     uiState.copy(runState = RunState.Done(event.content))
@@ -120,7 +99,6 @@ class PromptViewModel(
                             _uiState.update { it.copy(runState = RunState.Error(event.message)) }
                         }
                         is HermesApi.HermesEvent.Done -> {
-                            // Stream ended — if still Running (no run.completed received), mark as error
                             _uiState.update { uiState ->
                                 if (uiState.runState is RunState.Running) {
                                     val text = (uiState.runState as RunState.Running).streamedText
@@ -144,26 +122,11 @@ class PromptViewModel(
     }
 
     /**
-     * Cancels the in-flight run (if any) and stops the SSE stream.
-     *
-     * Called when the user dismisses the sheet mid-run. The cancel is
-     * fire-and-forget — we don't await the stop confirmation.
+     * Cancels the in-flight run (if any) and stops the stream.
      */
     fun cancelRun() {
-        val running = _uiState.value.runState as? RunState.Running ?: return
         runJob?.cancel()
         runJob = null
-
-        if (running.runId.isNotBlank()) {
-            viewModelScope.launch {
-                hermesApi.stopRun(
-                    baseUrl = _uiState.value.settings.serverUrl,
-                    apiKey = _uiState.value.settings.apiKey,
-                    runId = running.runId,
-                    profile = _uiState.value.settings.profile,
-                )
-            }
-        }
         _uiState.update { it.copy(runState = RunState.Idle) }
     }
 

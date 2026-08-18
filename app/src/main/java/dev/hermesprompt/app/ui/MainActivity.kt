@@ -76,6 +76,8 @@ class MainActivity : ComponentActivity() {
         // Settings screen forward.
         if (isAssistLaunch) {
             launchOverlay()
+        } else {
+            OverlayPromptHost.dismiss()
         }
     }
 

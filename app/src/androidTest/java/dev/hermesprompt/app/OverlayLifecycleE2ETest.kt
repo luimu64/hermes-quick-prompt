@@ -116,17 +116,30 @@ class OverlayLifecycleE2ETest {
 
                     val out = s.getOutputStream()
                     when {
-                        method == "POST" && path == "/v1/runs" -> {
+                        method == "POST" && (path == "/v1/runs" || path == "/v1/chat/completions") -> {
                             receivedPrompt.set(body)
-                            val resp = "{\"run_id\":\"e2e-run\",\"status\":\"queued\"}"
-                            write(
-                                out,
-                                "HTTP/1.1 202 Accepted\r\n" +
-                                    "Content-Type: application/json\r\n" +
-                                    "Content-Length: ${resp.toByteArray().size}\r\n" +
-                                    "Connection: close\r\n\r\n" +
-                                    resp
-                            )
+                            if (path == "/v1/runs") {
+                                val resp = "{\"run_id\":\"e2e-run\",\"status\":\"queued\"}"
+                                write(
+                                    out,
+                                    "HTTP/1.1 202 Accepted\r\n" +
+                                        "Content-Type: application/json\r\n" +
+                                        "Content-Length: ${resp.toByteArray().size}\r\n" +
+                                        "Connection: close\r\n\r\n" +
+                                        resp
+                                )
+                            } else {
+                                // OpenAI chat completions streaming
+                                write(out, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n")
+                                out.write("data: {\"choices\":[{\"delta\":{\"content\":\"Hello \"}}]}\n\n".toByteArray())
+                                out.flush()
+                                Thread.sleep(120)
+                                out.write("data: {\"choices\":[{\"delta\":{\"content\":\"from e2e mock\"}}]}\n\n".toByteArray())
+                                out.flush()
+                                Thread.sleep(120)
+                                out.write("data: [DONE]\n\n".toByteArray())
+                                out.flush()
+                            }
                         }
                         method == "GET" && path == "/v1/runs/e2e-run/events" -> {
                             write(out, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n")

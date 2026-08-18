@@ -100,9 +100,11 @@ class ModelSelectionEndToEndTest {
     }
 
     @Test
-    fun `startRun includes model in JSON request body when model is specified`() = runTest(testDispatcher) {
+    fun `promptStream includes model in JSON request body and streams SSE events`() = runTest(testDispatcher) {
         val capturedRequestBody = AtomicReference<String>()
         val capturedUrl = AtomicReference<String>()
+
+        val ssePayload = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello \"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"world!\"}}]}\n\ndata: [DONE]\n\n"
 
         val client = OkHttpClient.Builder()
             .addInterceptor { chain ->
@@ -117,7 +119,7 @@ class ModelSelectionEndToEndTest {
                     .protocol(Protocol.HTTP_1_1)
                     .code(200)
                     .message("OK")
-                    .body("""{"run_id":"test-run-123","status":"running"}""".toResponseBody("application/json".toMediaType()))
+                    .body(ssePayload.toResponseBody("text/event-stream".toMediaType()))
                     .build()
             }
             .build()
@@ -125,33 +127,24 @@ class ModelSelectionEndToEndTest {
         val hermesApi = HermesApi(client)
 
         // Case 1: Model is specified
-        val response = hermesApi.startRun(
+        val events = mutableListOf<HermesApi.HermesEvent>()
+        hermesApi.promptStream(
             baseUrl = "https://hermes.example.com",
             apiKey = "test-key",
             prompt = "Hello model test",
-            model = "openrouter/anthropic/claude-3.7-sonnet",
-            profile = "",
-        )
+            model = "Azure/DeepSeek-R1",
+            profile = "chat",
+        ).collect { events.add(it) }
 
-        assertEquals("test-run-123", response.runId)
         val body = capturedRequestBody.get()
         assertNotNull(body)
-        assertTrue("Request body should contain input prompt", body.contains(""""input":"Hello model test""""))
-        assertTrue("Request body should contain model parameter", body.contains(""""model":"openrouter/anthropic/claude-3.7-sonnet""""))
-        assertTrue("Request body should contain session_id", body.contains(""""session_id":"hermes-quick-prompt""""))
+        assertTrue("Request body should contain messages content", body.contains("Hello model test"))
+        assertTrue("Request body should contain model parameter", body.contains(""""model":"Azure/DeepSeek-R1""""))
+        assertTrue("Request body should contain profile parameter", body.contains(""""profile":"chat""""))
 
-        // Case 2: Model is blank / default -> omitted or null
-        hermesApi.startRun(
-            baseUrl = "https://hermes.example.com",
-            apiKey = "test-key",
-            prompt = "Default model test",
-            model = "",
-            profile = "",
-        )
-
-        val bodyDefault = capturedRequestBody.get()
-        assertTrue("Request body should contain input prompt", bodyDefault.contains(""""input":"Default model test""""))
-        assertFalse("Request body should omit model field when blank", bodyDefault.contains(""""model":"""))
+        assertTrue(events.any { it is HermesApi.HermesEvent.MessageDelta && it.delta == "Hello " })
+        assertTrue(events.any { it is HermesApi.HermesEvent.MessageDelta && it.delta == "world!" })
+        assertTrue(events.any { it is HermesApi.HermesEvent.RunCompleted && it.output == "Hello world!" })
     }
 
     @Test
