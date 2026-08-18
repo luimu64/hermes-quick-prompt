@@ -386,9 +386,12 @@ class OverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner, ViewM
             // pauses the activity underneath — the "app below keeps running"
             // guarantee comes from being an overlay, not from NOT_FOCUSABLE.
             // NOT_FOCUSABLE is re-applied on dismiss for hygiene.
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT,
-        )
+        ).apply {
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        }
 
         wm.addView(root, params)
         overlayRoot = root

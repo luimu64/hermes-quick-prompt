@@ -19,6 +19,8 @@ data class SettingsUiState(
     val apiKey: String = "",
     val model: String = "",
     val profile: String = "",
+    val availableModels: List<dev.hermesprompt.app.data.models.ModelInfo> = emptyList(),
+    val isLoadingModels: Boolean = false,
     val profileError: String? = null,
     val serverUrlError: String? = null,
     val isSaving: Boolean = false,
@@ -46,6 +48,7 @@ class SettingsViewModel(
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
 
     private var testJob: Job? = null
+    private var modelsJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -56,8 +59,35 @@ class SettingsViewModel(
                     model = settings.model,
                     profile = settings.profile,
                 ) }
+                if (settings.isConfigured) {
+                    fetchModels(settings.serverUrl, settings.apiKey, settings.profile)
+                }
             }
         }
+    }
+
+    fun fetchModels(serverUrl: String, apiKey: String, profile: String) {
+        val urlResult = SettingsValidator.normalize(serverUrl)
+        if (urlResult !is SettingsValidator.UrlResult.Valid) return
+        val url = urlResult.url
+        val prof = SettingsValidator.normalizeProfile(profile) ?: ""
+
+        modelsJob?.cancel()
+        modelsJob = viewModelScope.launch {
+            _uiState.update { it.copy(isLoadingModels = true) }
+            android.util.Log.d("SettingsViewModel", "Fetching models for $url...")
+            val models = hermesApi.listModels(url, apiKey.trim(), prof)
+            android.util.Log.d("SettingsViewModel", "Fetched ${models.size} models from server")
+            _uiState.update { it.copy(
+                availableModels = models,
+                isLoadingModels = false,
+            ) }
+        }
+    }
+
+    fun refreshModels() {
+        val state = _uiState.value
+        fetchModels(state.serverUrl, state.apiKey, state.profile)
     }
 
     fun onServerUrlChange(url: String) {
@@ -123,11 +153,22 @@ class SettingsViewModel(
         testJob = viewModelScope.launch {
             _uiState.update { it.copy(isTesting = true, testResult = null) }
             val ok = hermesApi.health(url, profile)
-            _uiState.update {
-                it.copy(
-                    isTesting = false,
-                    testResult = if (ok) TestResult.Success else TestResult.Failure("Server did not return OK"),
-                )
+            if (ok) {
+                val models = hermesApi.listModels(url, _uiState.value.apiKey.trim(), profile)
+                _uiState.update {
+                    it.copy(
+                        isTesting = false,
+                        testResult = TestResult.Success,
+                        availableModels = models,
+                    )
+                }
+            } else {
+                _uiState.update {
+                    it.copy(
+                        isTesting = false,
+                        testResult = TestResult.Failure("Server did not return OK"),
+                    )
+                }
             }
         }
     }

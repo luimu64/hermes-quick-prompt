@@ -499,13 +499,20 @@ object ModelRegistry {
 
     // ── Queries & Lookups ─────────────────────────────────────────────────────
 
+    private val dynamicProviders = java.util.concurrent.ConcurrentHashMap<String, ProviderInfo>()
+
+    fun registerProvider(provider: ProviderInfo) {
+        dynamicProviders[provider.id.lowercase(Locale.ROOT)] = provider
+    }
+
     /**
      * Finds a provider by ID (case-insensitive).
      * Returns [CUSTOM_PROVIDER] if not recognized.
      */
     fun getProvider(providerId: String?): ProviderInfo {
         if (providerId.isNullOrBlank()) return DEFAULT_PROVIDER
-        return providerMap[providerId.trim().lowercase(Locale.ROOT)] ?: CUSTOM_PROVIDER
+        val key = providerId.trim().lowercase(Locale.ROOT)
+        return providerMap[key] ?: dynamicProviders[key] ?: CUSTOM_PROVIDER
     }
 
     /**
@@ -521,14 +528,23 @@ object ModelRegistry {
      */
     fun getModelsGroupedByProvider(modelsList: List<ModelInfo> = models): Map<ProviderInfo, List<ModelInfo>> {
         val grouped = LinkedHashMap<ProviderInfo, MutableList<ModelInfo>>()
-        for (provider in providers) {
-            grouped[provider] = mutableListOf()
-        }
         for (model in modelsList) {
             val provider = getProvider(model.providerId)
             grouped.getOrPut(provider) { mutableListOf() }.add(model)
         }
-        return grouped.filterValues { it.isNotEmpty() }
+        return grouped
+            .toList()
+            .sortedWith(compareBy({ it.first.order }, { it.first.displayName }))
+            .toMap()
+            .filterValues { it.isNotEmpty() }
+    }
+
+    /**
+     * Looks up a curated catalog model without fallback synthesis.
+     */
+    fun findCuratedModel(id: String?): ModelInfo? {
+        if (id.isNullOrBlank()) return null
+        return modelMap[id.trim().lowercase(Locale.ROOT)]
     }
 
     /**
@@ -592,7 +608,7 @@ object ModelRegistry {
     fun inferProviderId(modelId: String): String {
         val lower = modelId.trim().lowercase(Locale.ROOT)
         return when {
-            lower.startsWith("nous/") || lower.startsWith("nousresearch/") -> ProviderInfo.ID_NOUS
+            lower.startsWith("nous/") || lower.startsWith("nousresearch/") || lower.startsWith("hermes") -> ProviderInfo.ID_NOUS
             lower.startsWith("openrouter/") -> ProviderInfo.ID_OPENROUTER
             lower.startsWith("anthropic/") || lower.startsWith("claude") -> ProviderInfo.ID_ANTHROPIC
             lower.startsWith("openai/") || lower.startsWith("gpt-") || lower.startsWith("o1") || lower.startsWith("o3") -> ProviderInfo.ID_OPENAI

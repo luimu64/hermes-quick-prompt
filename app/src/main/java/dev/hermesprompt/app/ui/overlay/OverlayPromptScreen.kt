@@ -1,8 +1,14 @@
 package dev.hermesprompt.app.ui.overlay
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -27,8 +33,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
@@ -40,7 +46,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -52,6 +61,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import dev.hermesprompt.app.ui.theme.ScrimColor
+import kotlinx.coroutines.delay
 
 /**
  * State driving the overlay UI.
@@ -99,17 +109,50 @@ fun OverlayPromptScreen(
     onQuestionSubmitted: (String) -> Unit,
     onAnswerRendered: (String) -> Unit,
     onDismiss: () -> Unit,
+    onDismissInitiated: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    var isVisible by remember { mutableStateOf(false) }
+    var isDismissing by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
 
-    // Auto-focus the input and pop the IME when the overlay appears.
-    LaunchedEffect(state.isConfigured) {
-        if (state.isConfigured) {
+    val handleDismiss: () -> Unit = {
+        if (!isDismissing) {
+            isDismissing = true
+            isVisible = false
+            onDismissInitiated()
+        }
+    }
+
+    val handleOpenSettings: () -> Unit = {
+        if (!isDismissing) {
+            isDismissing = true
+            isVisible = false
+            onDismissInitiated()
+            onOpenSettings()
+        }
+    }
+
+    // Trigger smooth entrance on first composition
+    LaunchedEffect(Unit) {
+        isVisible = true
+    }
+
+    // Auto-focus the input and pop the IME after entrance starts.
+    LaunchedEffect(state.isConfigured, isVisible) {
+        if (state.isConfigured && isVisible) {
             focusRequester.requestFocus()
             keyboardController?.show()
+        }
+    }
+
+    // After exit animation completes, notify host to teardown the window.
+    LaunchedEffect(isDismissing, isVisible) {
+        if (isDismissing && !isVisible) {
+            delay(240)
+            onDismiss()
         }
     }
 
@@ -121,167 +164,187 @@ fun OverlayPromptScreen(
     }
 
     Box(modifier = modifier.fillMaxSize()) {
-        // Scrim — the tap-outside dismissal region. Any tap on the root that
-        // lands outside the card surface dismisses the overlay.
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .testTag("overlay_scrim")
-                .background(ScrimColor)
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onDismiss,
-                )
-        )
+        // Scrim — animated fade in / fade out with tap-outside dismissal
+        AnimatedVisibility(
+            visible = isVisible,
+            enter = fadeIn(animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing)),
+            exit = fadeOut(animationSpec = tween(durationMillis = 200, easing = FastOutLinearInEasing)),
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag("overlay_scrim")
+                    .background(ScrimColor)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = handleDismiss,
+                    )
+            )
+        }
 
-        // Card surface
-        Surface(
+        // Card surface — animated slide in / slide out
+        AnimatedVisibility(
+            visible = isVisible,
+            enter = slideInVertically(
+                initialOffsetY = { fullHeight -> fullHeight },
+                animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+            ) + fadeIn(animationSpec = tween(durationMillis = 200, easing = LinearEasing)),
+            exit = slideOutVertically(
+                targetOffsetY = { fullHeight -> fullHeight },
+                animationSpec = tween(durationMillis = 220, easing = FastOutLinearInEasing),
+            ) + fadeOut(animationSpec = tween(durationMillis = 180, easing = FastOutLinearInEasing)),
             modifier = Modifier
                 .fillMaxWidth()
-                .testTag("overlay_card")
-                .align(Alignment.BottomCenter)
-                .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = {}, // consume clicks so they don't reach the scrim
-                ),
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 4.dp,
+                .align(Alignment.BottomCenter),
         ) {
-            Column(
+            Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .imePadding()
-                    .padding(horizontal = 20.dp)
-                    .padding(top = 12.dp, bottom = 20.dp)
-                    .heightIn(max = 560.dp)
-                    .verticalScroll(rememberScrollState()),
+                    .testTag("overlay_card")
+                    .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {}, // consume clicks so they don't reach the scrim
+                    ),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 4.dp,
             ) {
-                // Drag handle
-                Box(
+                Column(
                     modifier = Modifier
-                        .width(40.dp)
-                        .height(4.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f))
-                        .align(Alignment.CenterHorizontally),
-                )
-
-                Spacer(Modifier.height(12.dp))
-
-                // Header row: title + optional model badge + close affordance
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .imePadding()
+                        .padding(horizontal = 20.dp)
+                        .padding(top = 12.dp, bottom = 20.dp)
+                        .heightIn(max = 560.dp)
+                        .verticalScroll(rememberScrollState()),
                 ) {
-                    Text(
-                        text = "Hermes",
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    if (state.model.isNotBlank()) {
-                        val modelInfo = remember(state.model) {
-                            dev.hermesprompt.app.data.models.ModelRegistry.resolveModel(state.model)
-                        }
-                        Spacer(Modifier.width(8.dp))
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                            modifier = Modifier.padding(horizontal = 2.dp),
-                        ) {
-                            Text(
-                                text = modelInfo.displayName,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                maxLines = 1,
-                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                            )
-                        }
-                    }
-                    Spacer(Modifier.weight(1f))
-                    IconButton(onClick = onDismiss, modifier = Modifier.testTag("overlay_close")) {
-                        Icon(
-                            Icons.Default.Close,
-                            contentDescription = if (state.isRunning) "Stop and close" else "Close",
-                        )
-                    }
-                }
-
-                Spacer(Modifier.height(12.dp))
-
-                if (!state.isConfigured) {
-                    NotConfiguredHint(onOpenSettings = onOpenSettings)
-                } else {
-                    // Prompt input
-                    OutlinedTextField(
-                        value = state.promptText,
-                        onValueChange = onPromptChange,
+                    // Drag handle
+                    Box(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("overlay_input")
-                            .focusRequester(focusRequester),
-                        label = { Text("Ask Hermes anything…") },
-                        minLines = 1,
-                        maxLines = 6,
-                        enabled = !state.isRunning,
-                        keyboardOptions = KeyboardOptions(
-                            capitalization = KeyboardCapitalization.Sentences,
-                            imeAction = ImeAction.Send,
-                        ),
-                        keyboardActions = KeyboardActions(
-                            onSend = {
-                                if (!state.isRunning && state.promptText.isNotBlank()) {
-                                    onQuestionSubmitted(state.promptText.trim())
-                                }
-                            },
-                        ),
-                        trailingIcon = {
-                            if (state.isRunning) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier
-                                        .size(24.dp)
-                                        .padding(end = 4.dp),
-                                    strokeWidth = 2.5.dp,
-                                )
-                            } else {
-                                IconButton(
-                                    onClick = { onQuestionSubmitted(state.promptText.trim()) },
-                                    enabled = state.promptText.isNotBlank(),
-                                    modifier = Modifier.testTag("overlay_send"),
-                                ) {
-                                    Icon(
-                                        Icons.Default.Send,
-                                        contentDescription = "Send",
-                                        tint = if (state.promptText.isNotBlank())
-                                            MaterialTheme.colorScheme.primary
-                                        else
-                                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
-                                    )
-                                }
-                            }
-                        },
+                            .width(40.dp)
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f))
+                            .align(Alignment.CenterHorizontally),
                     )
 
                     Spacer(Modifier.height(12.dp))
 
-                    // Answer area — renders the app's response
-                    AnimatedVisibility(
-                        visible = state.isRunning || state.answerText.isNotBlank(),
-                        enter = fadeIn(),
-                        exit = fadeOut(),
+                    // Header row: title + optional model badge + close affordance
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        if (state.isRunning && state.answerText.isBlank()) {
-                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        } else {
-                            SelectionContainer {
+                        Text(
+                            text = "Hermes",
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        if (state.model.isNotBlank()) {
+                            val modelInfo = remember(state.model) {
+                                dev.hermesprompt.app.data.models.ModelRegistry.resolveModel(state.model)
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                modifier = Modifier.padding(horizontal = 2.dp),
+                            ) {
                                 Text(
-                                    text = state.answerText,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    modifier = Modifier.fillMaxWidth(),
+                                    text = modelInfo.displayName,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                 )
+                            }
+                        }
+                        Spacer(Modifier.weight(1f))
+                        IconButton(onClick = handleDismiss, modifier = Modifier.testTag("overlay_close")) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = if (state.isRunning) "Stop and close" else "Close",
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+
+                    if (!state.isConfigured) {
+                        NotConfiguredHint(onOpenSettings = handleOpenSettings)
+                    } else {
+                        // Prompt input
+                        OutlinedTextField(
+                            value = state.promptText,
+                            onValueChange = onPromptChange,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("overlay_input")
+                                .focusRequester(focusRequester),
+                            label = { Text("Ask Hermes anything…") },
+                            minLines = 1,
+                            maxLines = 6,
+                            enabled = !state.isRunning,
+                            keyboardOptions = KeyboardOptions(
+                                capitalization = KeyboardCapitalization.Sentences,
+                                imeAction = ImeAction.Send,
+                            ),
+                            keyboardActions = KeyboardActions(
+                                onSend = {
+                                    if (!state.isRunning && state.promptText.isNotBlank()) {
+                                        onQuestionSubmitted(state.promptText.trim())
+                                    }
+                                },
+                            ),
+                            trailingIcon = {
+                                if (state.isRunning) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier
+                                            .size(24.dp)
+                                            .padding(end = 4.dp),
+                                        strokeWidth = 2.5.dp,
+                                    )
+                                } else {
+                                    IconButton(
+                                        onClick = { onQuestionSubmitted(state.promptText.trim()) },
+                                        enabled = state.promptText.isNotBlank(),
+                                        modifier = Modifier.testTag("overlay_send"),
+                                    ) {
+                                        Icon(
+                                            Icons.AutoMirrored.Filled.Send,
+                                            contentDescription = "Send",
+                                            tint = if (state.promptText.isNotBlank())
+                                                MaterialTheme.colorScheme.primary
+                                            else
+                                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+                                        )
+                                    }
+                                }
+                            },
+                        )
+
+                        Spacer(Modifier.height(12.dp))
+
+                        // Answer area — renders the app's response
+                        AnimatedVisibility(
+                            visible = state.isRunning || state.answerText.isNotBlank(),
+                            enter = fadeIn(),
+                            exit = fadeOut(),
+                        ) {
+                            if (state.isRunning && state.answerText.isBlank()) {
+                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            } else {
+                                SelectionContainer {
+                                    Text(
+                                        text = state.answerText,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.fillMaxWidth(),
+                                    )
+                                }
                             }
                         }
                     }

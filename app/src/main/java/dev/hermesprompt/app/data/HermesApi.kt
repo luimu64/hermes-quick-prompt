@@ -1,5 +1,7 @@
 package dev.hermesprompt.app.data
 
+import dev.hermesprompt.app.data.models.ModelInfo
+import dev.hermesprompt.app.data.models.ModelRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -8,7 +10,10 @@ import kotlinx.coroutines.isActive
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -247,14 +252,221 @@ class HermesApi(private val client: OkHttpClient) {
      */
     suspend fun health(baseUrl: String, profile: String = ""): Boolean = kotlinx.coroutines.withContext(Dispatchers.IO) {
         try {
-            val request = Request.Builder()
+            val request1 = Request.Builder()
                 .url(apiUrl(baseUrl, profile, "/v1/health"))
                 .get()
                 .build()
-            client.newCall(request).execute().use { it.isSuccessful }
+            val ok1 = client.newCall(request1).execute().use { it.isSuccessful }
+            if (ok1) return@withContext true
+
+            val request2 = Request.Builder()
+                .url(apiUrl(baseUrl, profile, "/health"))
+                .get()
+                .build()
+            client.newCall(request2).execute().use { it.isSuccessful }
         } catch (_: Exception) {
             false
         }
+    }
+
+    /**
+     * Fetches the list of models exposed by the Hermes server / gateway.
+     * Checks `GET /api/model/options` first (Hermes rich catalog endpoint),
+     * and falls back to `GET /v1/models` (standard OpenAI discovery endpoint).
+     *
+     * @param baseUrl Normalized server URL.
+     * @param apiKey Bearer token.
+     * @param profile Optional profile name.
+     * @return List of [ModelInfo] objects discovered from the server.
+     */
+    suspend fun listModels(
+        baseUrl: String,
+        apiKey: String,
+        profile: String = "",
+    ): List<ModelInfo> = kotlinx.coroutines.withContext(Dispatchers.IO) {
+        if (baseUrl.isBlank()) return@withContext emptyList()
+
+        // 1. Try /api/model/options first (Hermes rich catalog endpoint)
+        val optionsResult = fetchModelOptions(baseUrl, apiKey, profile)
+        if (optionsResult.isNotEmpty()) {
+            return@withContext optionsResult
+        }
+
+        // 2. Fallback to /v1/models (Standard OpenAI endpoint)
+        val v1ModelsResult = fetchV1Models(baseUrl, apiKey, profile)
+        if (v1ModelsResult.isNotEmpty()) {
+            return@withContext v1ModelsResult
+        }
+
+        emptyList()
+    }
+
+    private fun fetchModelOptions(baseUrl: String, apiKey: String, profile: String): List<ModelInfo> {
+        return try {
+            val url = apiUrl(baseUrl, profile, "/api/model/options")
+            val request = Request.Builder()
+                .url(url)
+                .apply {
+                    if (apiKey.isNotBlank()) {
+                        addHeader("Authorization", "Bearer $apiKey")
+                    }
+                    addHeader("Accept", "application/json")
+                }
+                .get()
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return emptyList()
+                val body = response.body?.string() ?: return emptyList()
+                parseModelOptionsJson(body)
+            }
+        } catch (_: Throwable) {
+            emptyList()
+        }
+    }
+
+    private fun fetchV1Models(baseUrl: String, apiKey: String, profile: String): List<ModelInfo> {
+        return try {
+            val url = apiUrl(baseUrl, profile, "/v1/models")
+            val request = Request.Builder()
+                .url(url)
+                .apply {
+                    if (apiKey.isNotBlank()) {
+                        addHeader("Authorization", "Bearer $apiKey")
+                    }
+                    addHeader("Accept", "application/json")
+                }
+                .get()
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return emptyList()
+                val body = response.body?.string() ?: return emptyList()
+                parseV1ModelsJson(body)
+            }
+        } catch (_: Throwable) {
+            emptyList()
+        }
+    }
+
+    /**
+     * Parses the payload from Hermes `/api/model/options` into rich [ModelInfo] instances.
+     */
+    fun parseModelOptionsJson(body: String): List<ModelInfo> {
+        val result = mutableListOf<ModelInfo>()
+        result.add(ModelRegistry.SERVER_DEFAULT_MODEL)
+
+        try {
+            val jsonElement = json.parseToJsonElement(body)
+            val rootObj = jsonElement as? JsonObject ?: return emptyList()
+            val providersArray = rootObj["providers"] as? JsonArray ?: return emptyList()
+
+            for (providerElem in providersArray) {
+                val pObj = providerElem as? JsonObject ?: continue
+                val slug = pObj["slug"]?.jsonPrimitive?.contentOrNull ?: continue
+                val name = pObj["name"]?.jsonPrimitive?.contentOrNull ?: slug
+                val isCurrent = pObj["is_current"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
+                    ?: (pObj["is_current"]?.toString() == "true")
+                val isAuthenticated = pObj["authenticated"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
+                    ?: (pObj["authenticated"]?.toString() == "true")
+                val warning = pObj["warning"]?.jsonPrimitive?.contentOrNull
+
+                val providerInfo = dev.hermesprompt.app.data.models.ProviderInfo(
+                    id = slug,
+                    displayName = name,
+                    description = if (isCurrent) "Active server provider" else warning ?: "Provided by server ($name)",
+                    order = if (isCurrent) 1 else if (isAuthenticated) 5 else 50,
+                )
+                ModelRegistry.registerProvider(providerInfo)
+
+                val modelsArray = pObj["models"] as? JsonArray
+                if (modelsArray != null) {
+                    for (modelElem in modelsArray) {
+                        val modelId = when (modelElem) {
+                            is JsonPrimitive -> modelElem.contentOrNull
+                            is JsonObject -> modelElem["id"]?.jsonPrimitive?.contentOrNull
+                                ?: modelElem["name"]?.jsonPrimitive?.contentOrNull
+                            else -> null
+                        } ?: continue
+
+                        if (modelId.isBlank()) continue
+
+                        val isReasoning = modelId.contains("reasoning", ignoreCase = true) ||
+                            modelId.contains("r1", ignoreCase = true) ||
+                            modelId.contains("o1", ignoreCase = true) ||
+                            modelId.contains("o3", ignoreCase = true) ||
+                            modelId.contains("thinking", ignoreCase = true)
+
+                        val displayName = formatModelDisplayName(modelId)
+
+                        val modelInfo = ModelInfo(
+                            id = modelId,
+                            displayName = displayName,
+                            providerId = slug,
+                            description = "$name • $modelId",
+                            isReasoning = isReasoning,
+                            isCustom = false,
+                            isDefault = false,
+                            tags = listOf(slug, name.lowercase(java.util.Locale.ROOT)),
+                        )
+                        result.add(modelInfo)
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            return emptyList()
+        }
+
+        return if (result.size > 1) result else emptyList()
+    }
+
+    /**
+     * Parses standard OpenAI `/v1/models` format into [ModelInfo] instances.
+     */
+    fun parseV1ModelsJson(body: String): List<ModelInfo> {
+        val result = mutableListOf<ModelInfo>()
+        result.add(ModelRegistry.SERVER_DEFAULT_MODEL)
+
+        try {
+            val jsonElement = json.parseToJsonElement(body)
+            val dataArray = when (jsonElement) {
+                is JsonObject -> jsonElement["data"] as? JsonArray ?: jsonElement["models"] as? JsonArray
+                is JsonArray -> jsonElement
+                else -> null
+            } ?: return emptyList()
+
+            for (elem in dataArray) {
+                val id = when (elem) {
+                    is JsonObject -> elem["id"]?.jsonPrimitive?.contentOrNull
+                        ?: elem["name"]?.jsonPrimitive?.contentOrNull
+                        ?: elem["model"]?.jsonPrimitive?.contentOrNull
+                    is JsonPrimitive -> elem.contentOrNull
+                    else -> null
+                } ?: continue
+
+                if (id.isBlank()) continue
+
+                val resolved = ModelRegistry.findModel(id)
+                result.add(resolved)
+            }
+        } catch (_: Exception) {
+            return emptyList()
+        }
+
+        return if (result.size > 1) result else emptyList()
+    }
+
+    private fun formatModelDisplayName(modelId: String): String {
+        val known = ModelRegistry.findCuratedModel(modelId)
+        if (known != null && !known.isCustom && !known.isDefault) {
+            return known.displayName
+        }
+        if (modelId.contains('/')) {
+            val prefix = modelId.substringBeforeLast('/')
+            val leaf = modelId.substringAfterLast('/')
+            return "$leaf ($prefix)"
+        }
+        return modelId
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────

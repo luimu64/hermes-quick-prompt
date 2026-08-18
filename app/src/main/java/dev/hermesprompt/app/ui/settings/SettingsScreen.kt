@@ -120,6 +120,9 @@ fun SettingsScreen(
             ModelSelectorDropdown(
                 selectedModel = uiState.model,
                 onModelSelected = viewModel::onModelChange,
+                availableModels = uiState.availableModels,
+                isLoadingModels = uiState.isLoadingModels,
+                onRefreshModels = viewModel::refreshModels,
                 modifier = Modifier.fillMaxWidth(),
             )
 

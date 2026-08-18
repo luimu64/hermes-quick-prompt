@@ -1,6 +1,7 @@
 package dev.hermesprompt.app.ui
 
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -86,12 +87,25 @@ class MainActivity : ComponentActivity() {
      * the app underneath is never paused by a new task.
      */
     private fun launchOverlay() {
+        overrideActivityTransitionZero()
         if (!OverlayService.canDrawOverlays(this)) {
             OverlayService.openOverlayPermissionSettings(this)
             finish()
+            overrideActivityTransitionZero()
             return
         }
         OverlayPromptHost.summon(this)
         finish()
+        overrideActivityTransitionZero()
+    }
+
+    private fun overrideActivityTransitionZero() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            overrideActivityTransition(OVERRIDE_TRANSITION_OPEN, 0, 0)
+            overrideActivityTransition(OVERRIDE_TRANSITION_CLOSE, 0, 0)
+        } else {
+            @Suppress("DEPRECATION")
+            overridePendingTransition(0, 0)
+        }
     }
 }

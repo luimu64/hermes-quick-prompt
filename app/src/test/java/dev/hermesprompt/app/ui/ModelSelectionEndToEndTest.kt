@@ -176,25 +176,78 @@ class ModelSelectionEndToEndTest {
     }
 
     @Test
-    fun `OverlayUiState carries active model badge info`() {
-        val unconfiguredState = OverlayUiState(
-            promptText = "",
-            answerText = "",
-            isRunning = false,
-            isConfigured = false,
-            model = "",
-        )
-        assertTrue(unconfiguredState.model.isBlank())
+    fun `listModels parses Hermes api model options and OpenAI v1 models accurately`() = runTest(testDispatcher) {
+        val hermesOptionsJson = """
+            {
+              "providers": [
+                {
+                  "slug": "custom:bifrost",
+                  "name": "Bifrost",
+                  "is_current": true,
+                  "authenticated": true,
+                  "models": [
+                    "Azure/DeepSeek-R1",
+                    "Azure/AI21-Jamba-1.5-Large",
+                    "Azure/gpt-5.4"
+                  ]
+                },
+                {
+                  "slug": "copilot",
+                  "name": "GitHub Copilot",
+                  "is_current": false,
+                  "authenticated": true,
+                  "models": [
+                    "claude-sonnet-4.6",
+                    "gpt-5.4"
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
 
-        val configuredStateWithModel = OverlayUiState(
-            promptText = "What is the capital of Finland?",
-            answerText = "",
-            isRunning = true,
-            isConfigured = true,
-            model = "openrouter/anthropic/claude-3.7-sonnet",
-        )
-        assertEquals("openrouter/anthropic/claude-3.7-sonnet", configuredStateWithModel.model)
-        val resolved = ModelRegistry.resolveModel(configuredStateWithModel.model)
-        assertEquals("Claude 3.7 Sonnet (OpenRouter)", resolved.displayName)
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val path = chain.request().url.encodedPath
+                if (path.endsWith("/api/model/options")) {
+                    Response.Builder()
+                        .request(chain.request())
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("OK")
+                        .body(hermesOptionsJson.toResponseBody("application/json".toMediaType()))
+                        .build()
+                } else {
+                    Response.Builder()
+                        .request(chain.request())
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(404)
+                        .message("Not Found")
+                        .body("".toResponseBody("application/json".toMediaType()))
+                        .build()
+                }
+            }
+            .build()
+
+        val hermesApi = HermesApi(client)
+        val models = hermesApi.listModels("https://hermes.example.com", "test-key")
+
+        assertTrue(models.isNotEmpty())
+        assertTrue("First option must be server default", models.first().isDefault)
+
+        val deepseekR1 = models.find { it.id == "Azure/DeepSeek-R1" }
+        assertNotNull(deepseekR1)
+        assertEquals("DeepSeek-R1 (Azure)", deepseekR1?.displayName)
+        assertEquals("custom:bifrost", deepseekR1?.providerId)
+        assertTrue(deepseekR1!!.isReasoning)
+
+        val copilotSonnet = models.find { it.id == "claude-sonnet-4.6" }
+        assertNotNull(copilotSonnet)
+        assertEquals("claude-sonnet-4.6", copilotSonnet?.id)
+        assertEquals("copilot", copilotSonnet?.providerId)
+
+        // Grouping by provider should maintain registered dynamic providers
+        val grouped = ModelRegistry.getModelsGroupedByProvider(models)
+        assertTrue(grouped.keys.any { it.id == "custom:bifrost" && it.displayName == "Bifrost" })
+        assertTrue(grouped.keys.any { it.id == "copilot" && it.displayName == "GitHub Copilot" })
     }
 }

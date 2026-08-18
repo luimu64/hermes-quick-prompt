@@ -132,6 +132,11 @@ object OverlayPromptHost : OverlayContent {
     /** Dismisses the overlay: cancels the run, removes the window, stops the service. */
     fun dismiss() = reset()
 
+    /** Cancels any in-flight run immediately when dismissal is initiated. */
+    fun cancelRun() {
+        viewModel?.cancelRun()
+    }
+
     // --- OverlayContent (pushed by the service into this adapter) ---
 
     override fun setInitialText(text: String) {
@@ -274,6 +279,7 @@ private fun OverlayPromptContent() {
         onQuestionSubmitted = OverlayPromptHost::onQuestionSubmitted,
         onAnswerRendered = {}, // production hook — the state already renders answers
         onDismiss = OverlayPromptHost::dismiss,
+        onDismissInitiated = OverlayPromptHost::cancelRun,
         onOpenSettings = OverlayPromptHost::openSettings,
     )
 }
