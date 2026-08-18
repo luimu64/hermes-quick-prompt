@@ -165,7 +165,7 @@ fun SettingsScreen(
 
                 Button(
                     onClick = viewModel::save,
-                    enabled = !uiState.isSaving && !uiState.isTesting,
+                    enabled = uiState.isDirty && !uiState.isSaving && !uiState.isTesting,
                     modifier = Modifier.weight(1f),
                 ) {
                     if (uiState.isSaving) {

@@ -114,7 +114,8 @@ fun ModelSelectorDropdown(
             list.addAll(availableModels)
             list
         } else {
-            ModelRegistry.models
+            // Model selection is empty if connection isn't working
+            listOf(ModelRegistry.SERVER_DEFAULT_MODEL)
         }
     }
 
@@ -371,7 +372,28 @@ fun ModelSelectorDropdown(
                         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
                         // ── Virtualized Filtered Model Groups ──────────────────────
-                        if (filteredModels.isEmpty()) {
+                        if (availableModels.isEmpty() && searchQuery.isBlank()) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                            ) {
+                                ModelItemRow(
+                                    model = ModelRegistry.SERVER_DEFAULT_MODEL,
+                                    isSelected = selectedModel.isBlank(),
+                                    onClick = {
+                                        onModelSelected("")
+                                        expanded = false
+                                    },
+                                )
+                                Spacer(Modifier.height(12.dp))
+                                Text(
+                                    text = "No models loaded from server. Test connection above to fetch available models.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        } else if (filteredModels.isEmpty()) {
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()

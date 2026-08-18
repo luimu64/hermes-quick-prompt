@@ -143,7 +143,8 @@ fun OverlayPromptScreen(
     // Auto-focus the input and pop the IME after entrance starts.
     LaunchedEffect(state.isConfigured, isVisible) {
         if (state.isConfigured && isVisible) {
-            focusRequester.requestFocus()
+            delay(60)
+            runCatching { focusRequester.requestFocus() }
             keyboardController?.show()
         }
     }

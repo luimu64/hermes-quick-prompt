@@ -243,29 +243,131 @@ class HermesApi(private val client: OkHttpClient) {
         }
     }
 
-    /**
-     * Health check — no auth required.
-     *
-     * @param profile Optional profile name; when set the check targets the
-     *   profile-scoped path so an unknown profile surfaces as a failure.
-     * @return true on HTTP 2xx with `{"status":"ok"}` (or any 2xx).
-     */
-    suspend fun health(baseUrl: String, profile: String = ""): Boolean = kotlinx.coroutines.withContext(Dispatchers.IO) {
-        try {
-            val request1 = Request.Builder()
-                .url(apiUrl(baseUrl, profile, "/v1/health"))
-                .get()
-                .build()
-            val ok1 = client.newCall(request1).execute().use { it.isSuccessful }
-            if (ok1) return@withContext true
+    /** Sealed result of connection and authentication testing. */
+    sealed class AuthResult {
+        data class Success(val resolvedUrl: String, val models: List<ModelInfo>) : AuthResult()
+        data class Failure(val message: String) : AuthResult()
+    }
 
-            val request2 = Request.Builder()
-                .url(apiUrl(baseUrl, profile, "/health"))
-                .get()
-                .build()
-            client.newCall(request2).execute().use { it.isSuccessful }
-        } catch (_: Exception) {
-            false
+    private sealed class AuthProbeResult {
+        data class Success(val resolvedUrl: String, val models: List<ModelInfo>) : AuthProbeResult()
+        data class AuthFailed(val message: String) : AuthProbeResult()
+        data object HtmlDashboard : AuthProbeResult()
+        data class HttpError(val code: Int, val message: String) : AuthProbeResult()
+        data class NetworkError(val message: String) : AuthProbeResult()
+    }
+
+    /**
+     * Tests server connectivity AND validates the Bearer API key against the Hermes API.
+     * Only returns [AuthResult.Success] when the server returns a valid 2xx response with
+     * authorized JSON (never for unauthenticated HTML web dashboard responses).
+     *
+     * If [baseUrl] lacks an explicit port and returns web HTML, this probes the standard
+     * Hermes API server port 8642 (`http://<host>:8642`).
+     */
+    suspend fun testAuth(
+        baseUrl: String,
+        apiKey: String,
+        profile: String = "",
+    ): AuthResult = kotlinx.coroutines.withContext(Dispatchers.IO) {
+        val trimmedKey = apiKey.trim()
+        if (trimmedKey.isBlank()) {
+            return@withContext AuthResult.Failure("API key is required.")
+        }
+        if (baseUrl.isBlank()) {
+            return@withContext AuthResult.Failure("Server address is required.")
+        }
+
+        val urlCandidate = baseUrl.trim().removeSuffix("/")
+
+        fun probe(candidateUrl: String): AuthProbeResult {
+            return try {
+                // Try /api/model/options first
+                val optionsUrl = apiUrl(candidateUrl, profile, "/api/model/options")
+                val reqOptions = Request.Builder()
+                    .url(optionsUrl)
+                    .addHeader("Authorization", "Bearer $trimmedKey")
+                    .addHeader("Accept", "application/json")
+                    .get()
+                    .build()
+
+                client.newCall(reqOptions).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (resp.isSuccessful) {
+                        if (body.trimStart().startsWith("<")) {
+                            return AuthProbeResult.HtmlDashboard
+                        }
+                        val models = parseModelOptionsJson(body)
+                        if (models.isNotEmpty()) {
+                            return AuthProbeResult.Success(candidateUrl, models)
+                        }
+                    } else if (resp.code == 401 || resp.code == 403) {
+                        val errMsg = extractErrorMessage(body, resp.code)
+                        return AuthProbeResult.AuthFailed(errMsg)
+                    }
+                }
+
+                // Fallback: try /v1/models
+                val v1Url = apiUrl(candidateUrl, profile, "/v1/models")
+                val reqV1 = Request.Builder()
+                    .url(v1Url)
+                    .addHeader("Authorization", "Bearer $trimmedKey")
+                    .addHeader("Accept", "application/json")
+                    .get()
+                    .build()
+
+                client.newCall(reqV1).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (resp.isSuccessful) {
+                        if (body.trimStart().startsWith("<")) {
+                            return AuthProbeResult.HtmlDashboard
+                        }
+                        val models = parseV1ModelsJson(body)
+                        if (models.isNotEmpty()) {
+                            return AuthProbeResult.Success(candidateUrl, models)
+                        }
+                        return AuthProbeResult.Success(candidateUrl, listOf(ModelRegistry.SERVER_DEFAULT_MODEL))
+                    } else if (resp.code == 401 || resp.code == 403) {
+                        val errMsg = extractErrorMessage(body, resp.code)
+                        return AuthProbeResult.AuthFailed(errMsg)
+                    } else {
+                        val errMsg = extractErrorMessage(body, resp.code)
+                        return AuthProbeResult.HttpError(resp.code, errMsg)
+                    }
+                }
+            } catch (e: Exception) {
+                AuthProbeResult.NetworkError(e.message ?: "Connection failed")
+            }
+        }
+
+        // 1. Probe the provided URL
+        val primaryResult = probe(urlCandidate)
+        if (primaryResult is AuthProbeResult.Success) {
+            return@withContext AuthResult.Success(primaryResult.resolvedUrl, primaryResult.models)
+        }
+
+        // 2. If primary was rejected or was web HTML, and no port was given, check Hermes port 8642
+        val parsedUri = runCatching { java.net.URI.create(urlCandidate) }.getOrNull()
+        if (parsedUri != null && parsedUri.port == -1) {
+            val port8642Http = "http://${parsedUri.host}:8642"
+            val fallbackHttp = probe(port8642Http)
+            if (fallbackHttp is AuthProbeResult.Success) {
+                return@withContext AuthResult.Success(fallbackHttp.resolvedUrl, fallbackHttp.models)
+            }
+
+            val port8642Https = "https://${parsedUri.host}:8642"
+            val fallbackHttps = probe(port8642Https)
+            if (fallbackHttps is AuthProbeResult.Success) {
+                return@withContext AuthResult.Success(fallbackHttps.resolvedUrl, fallbackHttps.models)
+            }
+        }
+
+        when (primaryResult) {
+            is AuthProbeResult.AuthFailed -> AuthResult.Failure("Authentication failed: ${primaryResult.message}")
+            is AuthProbeResult.HtmlDashboard -> AuthResult.Failure("Connected to Web Dashboard instead of API Server. Please use the API port (e.g. http://${parsedUri?.host ?: "host"}:8642).")
+            is AuthProbeResult.HttpError -> AuthResult.Failure("Server error (HTTP ${primaryResult.code}): ${primaryResult.message}")
+            is AuthProbeResult.NetworkError -> AuthResult.Failure("Cannot reach server: ${primaryResult.message}")
+            else -> AuthResult.Failure("Authentication failed.")
         }
     }
 

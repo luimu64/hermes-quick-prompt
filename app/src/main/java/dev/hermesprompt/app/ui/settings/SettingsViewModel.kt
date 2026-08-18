@@ -21,6 +21,7 @@ data class SettingsUiState(
     val profile: String = "",
     val availableModels: List<dev.hermesprompt.app.data.models.ModelInfo> = emptyList(),
     val isLoadingModels: Boolean = false,
+    val isDirty: Boolean = false,
     val profileError: String? = null,
     val serverUrlError: String? = null,
     val isSaving: Boolean = false,
@@ -47,18 +48,23 @@ class SettingsViewModel(
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
 
+    private var savedSettings = AppSettings("", "", "")
     private var testJob: Job? = null
     private var modelsJob: Job? = null
 
     init {
         viewModelScope.launch {
             settingsStore.settingsFlow.collect { settings ->
-                _uiState.update { it.copy(
-                    serverUrl = settings.serverUrl,
-                    apiKey = settings.apiKey,
-                    model = settings.model,
-                    profile = settings.profile,
-                ) }
+                savedSettings = settings
+                _uiState.update { current ->
+                    current.copy(
+                        serverUrl = settings.serverUrl,
+                        apiKey = settings.apiKey,
+                        model = settings.model,
+                        profile = settings.profile,
+                        isDirty = false,
+                    )
+                }
                 if (settings.isConfigured) {
                     fetchModels(settings.serverUrl, settings.apiKey, settings.profile)
                 }
@@ -66,44 +72,57 @@ class SettingsViewModel(
         }
     }
 
-    fun fetchModels(serverUrl: String, apiKey: String, profile: String) {
-        val urlResult = SettingsValidator.normalize(serverUrl)
-        if (urlResult !is SettingsValidator.UrlResult.Valid) return
-        val url = urlResult.url
-        val prof = SettingsValidator.normalizeProfile(profile) ?: ""
-
-        modelsJob?.cancel()
-        modelsJob = viewModelScope.launch {
-            _uiState.update { it.copy(isLoadingModels = true) }
-            android.util.Log.d("SettingsViewModel", "Fetching models for $url...")
-            val models = hermesApi.listModels(url, apiKey.trim(), prof)
-            android.util.Log.d("SettingsViewModel", "Fetched ${models.size} models from server")
-            _uiState.update { it.copy(
-                availableModels = models,
-                isLoadingModels = false,
-            ) }
-        }
-    }
-
-    fun refreshModels() {
-        val state = _uiState.value
-        fetchModels(state.serverUrl, state.apiKey, state.profile)
+    private fun checkDirty(
+        serverUrl: String = _uiState.value.serverUrl,
+        apiKey: String = _uiState.value.apiKey,
+        model: String = _uiState.value.model,
+        profile: String = _uiState.value.profile,
+    ): Boolean {
+        return serverUrl != savedSettings.serverUrl ||
+                apiKey != savedSettings.apiKey ||
+                model != savedSettings.model ||
+                profile != savedSettings.profile
     }
 
     fun onServerUrlChange(url: String) {
-        _uiState.update { it.copy(serverUrl = url, serverUrlError = null, testResult = null) }
+        _uiState.update {
+            it.copy(
+                serverUrl = url,
+                serverUrlError = null,
+                testResult = null,
+                isDirty = checkDirty(serverUrl = url),
+            )
+        }
     }
 
     fun onApiKeyChange(key: String) {
-        _uiState.update { it.copy(apiKey = key, testResult = null) }
+        _uiState.update {
+            it.copy(
+                apiKey = key,
+                testResult = null,
+                isDirty = checkDirty(apiKey = key),
+            )
+        }
     }
 
     fun onModelChange(model: String) {
-        _uiState.update { it.copy(model = model) }
+        _uiState.update {
+            it.copy(
+                model = model,
+                isDirty = checkDirty(model = model),
+            )
+        }
     }
 
     fun onProfileChange(profile: String) {
-        _uiState.update { it.copy(profile = profile, profileError = null, testResult = null) }
+        _uiState.update {
+            it.copy(
+                profile = profile,
+                profileError = null,
+                testResult = null,
+                isDirty = checkDirty(profile = profile),
+            )
+        }
     }
 
     /** Validates, normalizes, and persists the current settings. */
@@ -126,19 +145,29 @@ class SettingsViewModel(
 
         viewModelScope.launch {
             _uiState.update { it.copy(isSaving = true, serverUrlError = null) }
-            settingsStore.save(
-                AppSettings(
+            val newSettings = AppSettings(
+                serverUrl = normalizedUrl,
+                apiKey = state.apiKey.trim(),
+                model = state.model.trim(),
+                profile = normalizedProfile,
+            )
+            settingsStore.save(newSettings)
+            savedSettings = newSettings
+            _uiState.update {
+                it.copy(
+                    isSaving = false,
+                    isDirty = false,
                     serverUrl = normalizedUrl,
-                    apiKey = state.apiKey.trim(),
-                    model = state.model.trim(),
                     profile = normalizedProfile,
                 )
-            )
-            _uiState.update { it.copy(isSaving = false, serverUrl = normalizedUrl, profile = normalizedProfile) }
+            }
         }
     }
 
-    /** Fires a health check against the currently entered server URL. */
+    /**
+     * Tests server connectivity and authenticates the API key.
+     * Only reports success if authentication is verified.
+     */
     fun testConnection() {
         testJob?.cancel()
         val rawUrl = _uiState.value.serverUrl
@@ -149,28 +178,83 @@ class SettingsViewModel(
         }
         val url = (urlResult as SettingsValidator.UrlResult.Valid).url
         val profile = SettingsValidator.normalizeProfile(_uiState.value.profile) ?: ""
+        val apiKey = _uiState.value.apiKey.trim()
+
+        if (apiKey.isBlank()) {
+            _uiState.update {
+                it.copy(testResult = TestResult.Failure("API key is required to test connection."))
+            }
+            return
+        }
 
         testJob = viewModelScope.launch {
             _uiState.update { it.copy(isTesting = true, testResult = null) }
-            val ok = hermesApi.health(url, profile)
-            if (ok) {
-                val models = hermesApi.listModels(url, _uiState.value.apiKey.trim(), profile)
-                _uiState.update {
-                    it.copy(
-                        isTesting = false,
-                        testResult = TestResult.Success,
-                        availableModels = models,
-                    )
+            val authResult = hermesApi.testAuth(url, apiKey, profile)
+            when (authResult) {
+                is HermesApi.AuthResult.Success -> {
+                    val resolvedUrl = authResult.resolvedUrl
+                    _uiState.update {
+                        it.copy(
+                            isTesting = false,
+                            serverUrl = resolvedUrl,
+                            availableModels = authResult.models,
+                            testResult = TestResult.Success,
+                            isDirty = checkDirty(serverUrl = resolvedUrl),
+                        )
+                    }
                 }
-            } else {
-                _uiState.update {
-                    it.copy(
-                        isTesting = false,
-                        testResult = TestResult.Failure("Server did not return OK"),
-                    )
+                is HermesApi.AuthResult.Failure -> {
+                    _uiState.update {
+                        it.copy(
+                            isTesting = false,
+                            availableModels = emptyList(),
+                            testResult = TestResult.Failure(authResult.message),
+                        )
+                    }
                 }
             }
         }
+    }
+
+    fun fetchModels(serverUrl: String, apiKey: String, profile: String) {
+        val urlResult = SettingsValidator.normalize(serverUrl)
+        if (urlResult !is SettingsValidator.UrlResult.Valid) return
+        val url = urlResult.url
+        val prof = SettingsValidator.normalizeProfile(profile) ?: ""
+        val key = apiKey.trim()
+        if (key.isBlank()) {
+            _uiState.update { it.copy(availableModels = emptyList()) }
+            return
+        }
+
+        modelsJob?.cancel()
+        modelsJob = viewModelScope.launch {
+            _uiState.update { it.copy(isLoadingModels = true) }
+            val authResult = hermesApi.testAuth(url, key, prof)
+            when (authResult) {
+                is HermesApi.AuthResult.Success -> {
+                    _uiState.update {
+                        it.copy(
+                            availableModels = authResult.models,
+                            isLoadingModels = false,
+                        )
+                    }
+                }
+                is HermesApi.AuthResult.Failure -> {
+                    _uiState.update {
+                        it.copy(
+                            availableModels = emptyList(),
+                            isLoadingModels = false,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun refreshModels() {
+        val state = _uiState.value
+        fetchModels(state.serverUrl, state.apiKey, state.profile)
     }
 
     fun clearTestResult() {

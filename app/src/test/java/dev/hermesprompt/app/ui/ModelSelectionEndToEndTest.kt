@@ -176,7 +176,7 @@ class ModelSelectionEndToEndTest {
     }
 
     @Test
-    fun `listModels parses Hermes api model options and OpenAI v1 models accurately`() = runTest(testDispatcher) {
+    fun `testAuth returns Success with models and resolves port 8642 fallback when HTML dashboard is detected`() = runTest(testDispatcher) {
         val hermesOptionsJson = """
             {
               "providers": [
@@ -185,21 +185,7 @@ class ModelSelectionEndToEndTest {
                   "name": "Bifrost",
                   "is_current": true,
                   "authenticated": true,
-                  "models": [
-                    "Azure/DeepSeek-R1",
-                    "Azure/AI21-Jamba-1.5-Large",
-                    "Azure/gpt-5.4"
-                  ]
-                },
-                {
-                  "slug": "copilot",
-                  "name": "GitHub Copilot",
-                  "is_current": false,
-                  "authenticated": true,
-                  "models": [
-                    "claude-sonnet-4.6",
-                    "gpt-5.4"
-                  ]
+                  "models": ["Azure/DeepSeek-R1", "Azure/gpt-5.4"]
                 }
               ]
             }
@@ -207,8 +193,8 @@ class ModelSelectionEndToEndTest {
 
         val client = OkHttpClient.Builder()
             .addInterceptor { chain ->
-                val path = chain.request().url.encodedPath
-                if (path.endsWith("/api/model/options")) {
+                val url = chain.request().url
+                if (url.port == 8642 && url.encodedPath.endsWith("/api/model/options")) {
                     Response.Builder()
                         .request(chain.request())
                         .protocol(Protocol.HTTP_1_1)
@@ -216,38 +202,55 @@ class ModelSelectionEndToEndTest {
                         .message("OK")
                         .body(hermesOptionsJson.toResponseBody("application/json".toMediaType()))
                         .build()
+                } else if (url.port == 443 || url.port == 80 || url.port == -1) {
+                    // Simulates web dashboard returning HTML
+                    Response.Builder()
+                        .request(chain.request())
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("OK")
+                        .body("<!doctype html><html><title>Sign in</title></html>".toResponseBody("text/html".toMediaType()))
+                        .build()
                 } else {
                     Response.Builder()
                         .request(chain.request())
                         .protocol(Protocol.HTTP_1_1)
                         .code(404)
                         .message("Not Found")
-                        .body("".toResponseBody("application/json".toMediaType()))
+                        .body("{}".toResponseBody("application/json".toMediaType()))
                         .build()
                 }
             }
             .build()
 
         val hermesApi = HermesApi(client)
-        val models = hermesApi.listModels("https://hermes.example.com", "test-key")
+        val result = hermesApi.testAuth("https://hermes.example.com", "valid-key")
 
-        assertTrue(models.isNotEmpty())
-        assertTrue("First option must be server default", models.first().isDefault)
+        assertTrue(result is HermesApi.AuthResult.Success)
+        val success = result as HermesApi.AuthResult.Success
+        assertEquals("http://hermes.example.com:8642", success.resolvedUrl)
+        assertTrue(success.models.any { it.id == "Azure/DeepSeek-R1" })
+    }
 
-        val deepseekR1 = models.find { it.id == "Azure/DeepSeek-R1" }
-        assertNotNull(deepseekR1)
-        assertEquals("DeepSeek-R1 (Azure)", deepseekR1?.displayName)
-        assertEquals("custom:bifrost", deepseekR1?.providerId)
-        assertTrue(deepseekR1!!.isReasoning)
+    @Test
+    fun `testAuth returns Failure when server rejects API key with 401`() = runTest(testDispatcher) {
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(401)
+                    .message("Unauthorized")
+                    .body("""{"error":{"message":"Invalid gateway API key (API_SERVER_KEY)"}}""".toResponseBody("application/json".toMediaType()))
+                    .build()
+            }
+            .build()
 
-        val copilotSonnet = models.find { it.id == "claude-sonnet-4.6" }
-        assertNotNull(copilotSonnet)
-        assertEquals("claude-sonnet-4.6", copilotSonnet?.id)
-        assertEquals("copilot", copilotSonnet?.providerId)
+        val hermesApi = HermesApi(client)
+        val result = hermesApi.testAuth("http://hermes.example.com:8642", "wrong-key")
 
-        // Grouping by provider should maintain registered dynamic providers
-        val grouped = ModelRegistry.getModelsGroupedByProvider(models)
-        assertTrue(grouped.keys.any { it.id == "custom:bifrost" && it.displayName == "Bifrost" })
-        assertTrue(grouped.keys.any { it.id == "copilot" && it.displayName == "GitHub Copilot" })
+        assertTrue(result is HermesApi.AuthResult.Failure)
+        val failure = result as HermesApi.AuthResult.Failure
+        assertTrue(failure.message.contains("Invalid gateway API key"))
     }
 }
